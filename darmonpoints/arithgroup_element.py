@@ -211,7 +211,19 @@ class ArithGroupElement(MultiplicativeGroupElement):
 
     def _act_on_(self, x, on_left):
         assert on_left == True
-        return self.matrix() * x
+        if hasattr(x, 'imag'): # x is a complex number
+            mat = self.parent().get_archimedean_embedding(x.parent().precision())(self.quaternion_rep)
+        else:
+            mat = self.matrix()
+        try:
+            is_field = x.parent().is_field()
+        except AttributeError:
+            is_field = False
+        if is_field:
+            a, b, c, d = mat.list()
+            return (a * x + b) / (c * x + d)
+        else:
+            return mat * x
 
     def conjugate_by(self, w):
         word_rep = None

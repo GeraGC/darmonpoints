@@ -228,9 +228,7 @@ class BigArithGroup_class(AlgebraicGroup):
         self.seed = seed
         self.magma = magma
         self._use_shapiro = kwargs.get("use_shapiro", False)
-        self._hardcode_matrices = kwargs.get(
-            "hardcode_matrices", False
-        )  # ((abtuple is None and discriminant == 1) or abtuple == (1,1)))
+        self._hardcode_matrices = kwargs.get('hardcode_matrices', (abtuple is None and discriminant == 1) or abtuple == (1,1))
         nscartan = kwargs.get("nscartan", None)
         if seed is not None:
             verbose("Setting Magma seed to %s" % seed)
