@@ -309,8 +309,8 @@ class ArithGroup_generic(AlgebraicGroup):
         max_length = kwargs.get("max_length", None)
         if random:
             my_iter = (
-                [ZZ.random_element(ngens) for _ in range(10)] for _ in ZZ
-            )  # range(1+ZZ.random_element(ngens//2).abs())] for _ in ZZ)
+                [ZZ.random_element(ngens) for _ in range(1+ZZ.random_element(10, distribution='gaussian').abs())] for _ in ZZ
+            )
         else:
             my_iter = enumerate_words(range(ngens))
         for v in my_iter:

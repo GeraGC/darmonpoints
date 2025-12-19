@@ -228,7 +228,7 @@ class BigArithGroup_class(AlgebraicGroup):
         self.seed = seed
         self.magma = magma
         self._use_shapiro = kwargs.get("use_shapiro", False)
-        self._hardcode_matrices = kwargs.get('hardcode_matrices', (abtuple is None and discriminant == 1) or abtuple == (1,1))
+        self._hardcode_matrices = False # kwargs.get('hardcode_matrices', (abtuple is None and discriminant == 1) or abtuple == (1,1))
         nscartan = kwargs.get("nscartan", None)
         if seed is not None:
             verbose("Setting Magma seed to %s" % seed)
@@ -508,10 +508,10 @@ class BigArithGroup_class(AlgebraicGroup):
                 pi = self.ideal_p.gens_reduced()[0]
             return [self.Gpn(1).quaternion_rep] + [
                 1
-                / self.prime()
+                / pi
                 * wp
                 * self.Gn.matrix_to_quaternion(
-                    matrix(self.F, 2, 2, [1, -a, 0, self.prime()])
+                    matrix(self.F, 2, 2, [1, -a, 0, pi])
                 )
                 for a in alist
             ]
@@ -523,12 +523,14 @@ class BigArithGroup_class(AlgebraicGroup):
                 lam = -wp.reduced_norm()
             n_iters = 0
             random = False if self.p <= 17 else True  # DEBUG - hardcoded bound here...
-            for elt in self.Gn.enumerate_elements(random=random):
+            for elt0 in self.Gn.enumerate_elements(random=random):
+                replist = [r for r in reps if r is not None]
+                elt = replist[ZZ.random_element(0, len(replist))] * elt0 * replist[ZZ.random_element(0, len(replist))]
                 n_iters += 1
                 new_inv = elt**-1
                 embelt = emb(elt)
                 sk = lam * new_inv * wp**-1
-                embsk = emb(sk)
+                # embsk = emb(sk)
                 # if (embsk[0,0] - 1).valuation() > 0 and embsk[1,0].valuation() > 0\
                 #    and all([not self.is_in_Gpn_order(o * new_inv) for o in reps if o is not None]):
                 if (embelt[0, 0] - 1).valuation() > 0 and all(
@@ -582,7 +584,6 @@ class BigArithGroup_class(AlgebraicGroup):
     @cached_method
     def get_Up_reps(self):
         if self._hardcode_matrices:
-            B = self.small_group().B
             try:
                 pi = self.ideal_p.gens_reduced()[0]
                 alist = list(self.ideal_p.residues())
@@ -668,7 +669,7 @@ class BigArithGroup_class(AlgebraicGroup):
         if self._hardcode_matrices:  # DEBUG, this is untested!
             self._wp = wp
             return self._wp
-        epsinv = matrix(QQ, 2, 2, [0, -1, self.p, 0]) ** -1
+        epsinv = matrix(QQ, 2, 2, [0, -1, self.prime(), 0]) ** -1
 
         set_immutable(wp)
         ans = 0
@@ -680,18 +681,8 @@ class BigArithGroup_class(AlgebraicGroup):
             ans += 2
         if not self.Gpn._is_in_order(wp):
             ans += 4
-        # if hasattr(self, 'local_condition'):
-        #     wp1 = self.local_condition(wp)
-        #     if (wp1[0,0] - 1).valuation() == 0:
-        #         ans += 8
-        #     elif (wp1[1,1] - 1).valuation() == 0:
-        #         ans += 8
-        #     elif (wp1[1,0]).valuation() == 0:
-        #         ans += 8
-
-        #     if not all([o.valuation() > 0 for o in wp1.list()]):
-        #         ans += 8
         if ans > 0:
+            verbose("Rejected wp (code %s)" % ans)
             raise TypeError("Wrong wp (code %s)" % ans)
         self._wp = wp
         return self._wp
@@ -731,6 +722,7 @@ class BigArithGroup_class(AlgebraicGroup):
                 continue
             verbose("wp = %s" % list(wp))
             return wp
+        raise RuntimeError("Trouble finding wp by enumeration")
 
     def get_embedding(self, prec):
         r"""
@@ -988,7 +980,7 @@ def ArithGroup(base, discriminant, abtuple=None, level=1, magma=None, **kwargs):
             if not is_page_initialized(magma):
                 attach_kleinian_code(magma)
             if implementation is None:
-                if (a, b) == (1, 1):
+                if False: #(a, b) == (1, 1):
                     return MatrixArithGroup(
                         base, level, magma=magma, implementation="geometric", **kwargs
                     )

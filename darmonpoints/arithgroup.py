@@ -1664,21 +1664,21 @@ class ArithGroup_nf_generic(ArithGroup_generic):
         wtime = walltime()
         verbose("Calling _init_magma_objects...")
         # Use order given by Pari/GP
-        w = self.F.maximal_order().ring_generators()[0]
-        wcoords = w.coordinates_in_terms_of_powers()
-        path = dirname(abspath(getfile(currentframe())))
-        verbose("Path = %s" % path)
-        ans = gp.eval('default(sopath, "%s/Fdoms")' % path)
-        verbose(ans)
-        ans = gp.eval("\\r %s/Fdoms/fdom.gp" % path)
-        verbose(ans)
-        Fp = gp.nfinit(str(QQ["y"](w.minpoly())))
-        abtuple = (self.a, self.b)
-        if abtuple != (1,1):
-            Ap = gp.alginit(Fp, [QQ["y"](wcoords(o)) for o in abtuple])
-            self.Ap = Ap
-        else:
-            self.Ap = None
+        # w = self.F.maximal_order().ring_generators()[0]
+        # wcoords = w.coordinates_in_terms_of_powers()
+        # path = dirname(abspath(getfile(currentframe())))
+        # verbose("Path = %s" % path)
+        # ans = gp.eval('default(sopath, "%s/Fdoms")' % path)
+        # verbose(ans)
+        # ans = gp.eval("\\r %s/Fdoms/fdom.gp" % path)
+        # verbose(ans)
+        # Fp = gp.nfinit(str(QQ["y"](w.minpoly())))
+        # abtuple = (self.a, self.b)
+        # if abtuple != (1,1):
+        #     Ap = gp.alginit(Fp, [QQ["y"](wcoords(o)) for o in abtuple])
+        #     self.Ap = Ap
+        # else:
+        #     self.Ap = None
 
         if info_magma is None:
             Qx_magma = self.magma.PolynomialRing(self.magma.Rationals())
@@ -1700,7 +1700,7 @@ class ArithGroup_nf_generic(ArithGroup_generic):
                 self._F_magma, self.b
             )
             self._B_magma = self.magma.QuaternionAlgebra(FF_magma, am, bm)
-            if isinstance(self, ArithGroup_matrix_generic):
+            if False: # isinstance(self, ArithGroup_matrix_generic):
                 i, j = self._B_magma.gen(1), self._B_magma.gen(2)
                 k = i * j
                 on = self._B_magma.One()
@@ -1708,15 +1708,15 @@ class ArithGroup_nf_generic(ArithGroup_generic):
                     [(on + i) / 2, (j + k) / 2, (j - k) / 2, (on - i) / 2]
                 )
             else:
-                Omaxbasis = pari_ordmax_basis_to_sage(w, Ap)
-                Omaxbasis = [
-                    quaternion_to_magma_quaternion(self._B_magma, self.B(o))
-                    for o in Omaxbasis
-                ]
-                self._Omax_magma = self.magma.Order(Omaxbasis)
-                # self._Omax_magma = MaximalOrder()
+                # Omaxbasis = pari_ordmax_basis_to_sage(w, Ap)
+                # Omaxbasis = [
+                #     quaternion_to_magma_quaternion(self._B_magma, self.B(o))
+                #     for o in Omaxbasis
+                # ]
+                # self._Omax_magma = self.magma.Order(Omaxbasis)
+                self._Omax_magma = self._B_magma.MaximalOrder()
             if self.level != self.F.ideal(1):
-                if isinstance(self, ArithGroup_matrix_generic):
+                if False: #isinstance(self, ArithGroup_matrix_generic):
                     i, j = self._B_magma.gen(1), self._B_magma.gen(2)
                     k = i * j
                     Pgen = sage_F_elt_to_magma(
@@ -1739,7 +1739,7 @@ class ArithGroup_nf_generic(ArithGroup_generic):
             self._B_magma = info_magma._B_magma
             self._Omax_magma = info_magma._Omax_magma
             if self.level != self.F.ideal(1):
-                if isinstance(self, ArithGroup_matrix_generic):
+                if False: # isinstance(self, ArithGroup_matrix_generic):
                     i, j = self._B_magma.gen(1), self._B_magma.gen(2)
                     k = i * j
                     Pgen = sage_F_elt_to_magma(

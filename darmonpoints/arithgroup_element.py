@@ -223,7 +223,10 @@ class ArithGroupElement(MultiplicativeGroupElement):
             a, b, c, d = mat.list()
             return (a * x + b) / (c * x + d)
         else:
-            return mat * x
+            try:
+                return mat * x
+            except TypeError:
+                return x._acted_upon_(self, on_left)
 
     def conjugate_by(self, w):
         word_rep = None

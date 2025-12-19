@@ -549,7 +549,9 @@ def our_lindep(V,prec = None, base=None, **kwargs):
         M[n+i,-1-i] = pn
     M = M.transpose().change_ring(ZZ)
     if algorithm == 'magma':
-        global magma
+        magma = kwargs.get('magma', None)
+        if magma is None:
+            from sage.interfaces.magma import magma
         tmp = magma(M).Transpose().KernelMatrix().LLL()[1]
         tmp = tuple(sage_eval(str(tmp).replace(' ', ',')))
     else:
@@ -2213,8 +2215,7 @@ def simplification_isomorphism(G, return_inverse=False):
         return ans
 
 
-def update_progress(progress, msg=""):
-    barLength = 20  # Modify this to change the length of the progress bar
+def update_progress(progress, msg="", barLength=20):    
     if len(msg) > 0:
         msg = "( %s )" % msg
     if isinstance(progress, int):

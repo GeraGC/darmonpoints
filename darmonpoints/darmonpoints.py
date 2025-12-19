@@ -170,7 +170,6 @@ def darmon_point(
     beta,
     prec,
     ramification_at_infinity=None,
-    input_data=None,
     magma=None,
     working_prec=None,
     recognize_point=True,
@@ -327,227 +326,225 @@ def darmon_point(
     fwrite("Elliptic curve %s: %s" % (Ename, E), outfile)
     if outfile is not None:
         print("Partial results will be saved in %s" % outfile)
-
-    if input_data is None:
-        if cohomological:
-            # Define the S-arithmetic group
-            if F != QQ and ramification_at_infinity is None:
-                if F.signature()[0] > 1:
-                    if F.signature()[1] == 1:
-                        ramification_at_infinity = F.real_places(
-                            prec=Infinity
-                        )  # Totally 'definite'
-                    else:
-                        raise ValueError("Please specify the ramification at infinity")
-                elif F.signature()[0] == 1:
-                    if len(F.ideal(DB).factor()) % 2 == 0:
-                        ramification_at_infinity = []  # Split at infinity
-                    else:
-                        ramification_at_infinity = F.real_places(
-                            prec=Infinity
-                        )  # Ramified at infinity
+    if cohomological:
+        # Define the S-arithmetic group
+        if F != QQ and ramification_at_infinity is None:
+            if F.signature()[0] > 1:
+                if F.signature()[1] == 1:
+                    ramification_at_infinity = F.real_places(
+                        prec=Infinity
+                    )  # Totally 'definite'
                 else:
-                    ramification_at_infinity = None
-            if F == QQ:
-                abtuple = QuaternionAlgebra(DB).invariants()
+                    raise ValueError("Please specify the ramification at infinity")
+            elif F.signature()[0] == 1:
+                if len(F.ideal(DB).factor()) % 2 == 0:
+                    ramification_at_infinity = []  # Split at infinity
+                else:
+                    ramification_at_infinity = F.real_places(
+                        prec=Infinity
+                    )  # Ramified at infinity
             else:
-                abtuple = quaternion_algebra_invariants_from_ramification(
-                    F, DB, ramification_at_infinity, magma=magma
-                )
+                ramification_at_infinity = None
+        if F == QQ:
+            abtuple = QuaternionAlgebra(DB).invariants()
+        else:
+            abtuple = quaternion_algebra_invariants_from_ramification(
+                F, DB, ramification_at_infinity, magma=magma
+            )
 
-            G = kwargs.pop("G", None)
-            if G is None:
-                fwrite(f"# Initializing S-arithmetic group...", outfile)
-                print(f"abtuple = {abtuple} Np = {Np} F = {F}", outfile)
-                G = BigArithGroup(
-                    P,
-                    abtuple,
-                    Np,
-                    base=F,
+        G = kwargs.pop("G", None)
+        if G is None:
+            fwrite(f"# Initializing S-arithmetic group...", outfile)
+            print(f"abtuple = {abtuple} Np = {Np} F = {F}", outfile)
+            G = BigArithGroup(
+                P,
+                abtuple,
+                Np,
+                base=F,
+                outfile=outfile,
+                seed=magma_seed,
+                use_sage_db=use_sage_db,
+                magma=magma,
+                use_shapiro=use_shapiro,
+                nscartan=Ncartan,
+            )
+        return G
+        # Define the cycle ( in H_1(G,Div^0 Hp) )
+        Coh = ArithCoh(G)
+        while True:
+            try:
+                cycleGn, nn, ell = construct_homology_cycle(
+                    p,
+                    G,
+                    beta,
+                    working_prec,
+                    lambda q: Coh.hecke_matrix(q).minpoly(),
                     outfile=outfile,
-                    seed=magma_seed,
-                    use_sage_db=use_sage_db,
-                    magma=magma,
-                    use_shapiro=use_shapiro,
-                    nscartan=Ncartan,
+                    elliptic_curve=E,
+                    smoothen_prime=kwargs.get("smoothen_prime", None),
+                    **kwargs,
                 )
-            # Define the cycle ( in H_1(G,Div^0 Hp) )
-            Coh = ArithCoh(G)
-            while True:
-                try:
-                    cycleGn, nn, ell = construct_homology_cycle(
-                        p,
-                        G,
-                        beta,
-                        working_prec,
-                        lambda q: Coh.hecke_matrix(q).minpoly(),
-                        outfile=outfile,
-                        elliptic_curve=E,
-                        smoothen_prime=kwargs.get("smoothen_prime", None),
-                        **kwargs,
-                    )
-                    break
-                except PrecisionError:
-                    working_prec *= 2
-                    verbose(
-                        "Encountered precision error, trying with higher precision (= %s)"
-                        % working_prec
-                    )
-                except ValueError as e:
-                    fwrite(
-                        "ValueError occurred when constructing homology cycle.", outfile
-                    )
-                    fwrite("Error : %s" % str(e), outfile)
-                    fwrite("Returning the S-arithmetic group.", outfile)
-                    if quit_when_done:
-                        magma.quit()
-                    return G
-                except AssertionError as e:
-                    fwrite(
-                        "Assertion occurred when constructing homology cycle. Returning the S-arithmetic group.",
-                        outfile,
-                    )
-                    fwrite("%s" % str(e), outfile)
-                    if quit_when_done:
-                        magma.quit()
-                    return G
-            eisenstein_constant = -ZZ(E.reduction(ell).count_points())
+                break
+            except PrecisionError:
+                working_prec *= 2
+                verbose(
+                    "Encountered precision error, trying with higher precision (= %s)"
+                    % working_prec
+                )
+            except ValueError as e:
+                fwrite(
+                    "ValueError occurred when constructing homology cycle.", outfile
+                )
+                fwrite("Error : %s" % str(e), outfile)
+                fwrite("Returning the S-arithmetic group.", outfile)
+                if quit_when_done:
+                    magma.quit()
+                return G
+            except AssertionError as e:
+                fwrite(
+                    "Assertion occurred when constructing homology cycle. Returning the S-arithmetic group.",
+                    outfile,
+                )
+                fwrite("%s" % str(e), outfile)
+                if quit_when_done:
+                    magma.quit()
+                return G
+        eisenstein_constant = -ZZ(E.reduction(ell).count_points())
+        fwrite(
+            "r = %s, so a_r(E) - r - 1 = %s" % (ell, eisenstein_constant), outfile
+        )
+        fwrite("exponent = %s" % nn, outfile)
+        phiE = get_cocycle_from_elliptic_curve(Coh, E, sign=sign_at_infinity)
+        if hasattr(E, "ap"):
+            sign_ap = E.ap(P)
+        else:
+            try:
+                sign_ap = ZZ(P.norm() + 1 - E.reduction(P).count_points())
+            except ValueError:
+                sign_ap = ZZ(
+                    P.norm()
+                    + 1
+                    - Curve(E).change_ring(P.residue_field()).count_points(1)[0]
+                )
+
+        Phi = get_overconvergent_class_quaternionic(
+            P,
+            phiE,
+            G,
+            prec,
+            sign_at_infinity,
+            sign_ap,
+            use_ps_dists=use_ps_dists,
+            use_sage_db=use_sage_db,
+            progress_bar=progress_bar,
+            Ename=Ename,
+        )
+        # Integration with moments
+        tot_time = walltime()
+        J = integrate_H1(
+            G,
+            cycleGn,
+            Phi,
+            1,
+            prec=working_prec,
+            twist=True,
+            progress_bar=progress_bar,
+        )
+        verbose("integration tot_time = %s" % walltime(tot_time))
+        if use_sage_db:
+            G.save_to_db()
+    else:  # not cohomological
+        nn = 1
+        eisenstein_constant = 1
+        if algorithm is None:
+            if Np == 1:
+                algorithm = "darmon_pollack"
+            else:
+                algorithm = "guitart_masdeu"
+        w = K.maximal_order().ring_generators()[0]
+        r0, r1 = w.coordinates_in_terms_of_powers()(K.gen())
+        QQp = Qp(p, working_prec)
+        Cp = QQp.extension(w.minpoly().change_ring(QQp), names="g")
+        v0 = K.hom([r0 + r1 * Cp.gen()])
+
+        # Optimal embeddings of level one
+        fwrite("Computing optimal embeddings of level one...", outfile)
+        Wlist = find_optimal_embeddings(
+            K, use_magma=use_magma, extra_conductor=extra_conductor, magma=magma
+        )
+        fwrite("Found %s such embeddings." % len(Wlist), outfile)
+        if idx_embedding is not None:
+            if idx_embedding >= len(Wlist):
+                fwrite(
+                    "There are not enough embeddings. Taking the index modulo %s"
+                    % len(Wlist),
+                    outfile,
+                )
+                idx_embedding = idx_embedding % len(Wlist)
+            fwrite("Taking only embedding number %s" % (idx_embedding), outfile)
+            Wlist = [Wlist[idx_embedding]]
+
+        # Find the orientations
+        orients = (
+            K.maximal_order()
+            .ring_generators()[0]
+            .minpoly()
+            .roots(Zmod(Np), multiplicities=False)
+        )
+        fwrite("Possible orientations: %s" % orients, outfile)
+        if len(Wlist) == 1 or idx_orientation == -1:
+            fwrite("Using all orientations, since hK = 1", outfile)
+            chosen_orientation = None
+        else:
+            fwrite("Using orientation = %s" % orients[idx_orientation], outfile)
+            chosen_orientation = orients[idx_orientation]
+
+        emblist = []
+        for i, W in enumerate(Wlist):
+            tau, gtau, sign, limits = find_tau0_and_gtau(
+                v0,
+                Np,
+                W,
+                algorithm=algorithm,
+                orientation=chosen_orientation,
+                extra_conductor=extra_conductor,
+            )
             fwrite(
-                "r = %s, so a_r(E) - r - 1 = %s" % (ell, eisenstein_constant), outfile
+                "n_evals = %s" % sum((num_evals(t1, t2) for t1, t2 in limits)),
+                outfile,
             )
-            fwrite("exponent = %s" % nn, outfile)
-            phiE = get_cocycle_from_elliptic_curve(Coh, E, sign=sign_at_infinity)
-            if hasattr(E, "ap"):
-                sign_ap = E.ap(P)
-            else:
-                try:
-                    sign_ap = ZZ(P.norm() + 1 - E.reduction(P).count_points())
-                except ValueError:
-                    sign_ap = ZZ(
-                        P.norm()
-                        + 1
-                        - Curve(E).change_ring(P.residue_field()).count_points(1)[0]
-                    )
+            emblist.append((tau, gtau, sign, limits))
 
-            Phi = get_overconvergent_class_quaternionic(
-                P,
-                phiE,
-                G,
-                prec,
-                sign_at_infinity,
-                sign_ap,
-                use_ps_dists=use_ps_dists,
-                use_sage_db=use_sage_db,
-                progress_bar=progress_bar,
-                Ename=Ename,
+        # Get the cohomology class from E
+        Phi = get_overconvergent_class_matrices(
+            P,
+            E,
+            prec,
+            sign_at_infinity,
+            use_ps_dists=use_ps_dists,
+            use_sage_db=use_sage_db,
+            progress_bar=progress_bar,
+        )
+
+        J = 1
+        for i, emb in enumerate(emblist):
+            fwrite(
+                "Computing %s-th period, attached to the embedding: %s"
+                % (i, Wlist[i].list()),
+                outfile,
             )
-            # Integration with moments
-            tot_time = walltime()
-            J = integrate_H1(
-                G,
-                cycleGn,
-                Phi,
-                1,
-                prec=working_prec,
-                twist=True,
-                progress_bar=progress_bar,
+            tau, gtau, sign, limits = emb
+            n_evals = sum((num_evals(t1, t2) for t1, t2 in limits))
+            fwrite(
+                "Computing one period...(total of %s evaluations)" % n_evals,
+                outfile,
             )
-            verbose("integration tot_time = %s" % walltime(tot_time))
-            if use_sage_db:
-                G.save_to_db()
-        else:  # not cohomological
-            nn = 1
-            eisenstein_constant = 1
-            if algorithm is None:
-                if Np == 1:
-                    algorithm = "darmon_pollack"
-                else:
-                    algorithm = "guitart_masdeu"
-            w = K.maximal_order().ring_generators()[0]
-            r0, r1 = w.coordinates_in_terms_of_powers()(K.gen())
-            QQp = Qp(p, working_prec)
-            Cp = QQp.extension(w.minpoly().change_ring(QQp), names="g")
-            v0 = K.hom([r0 + r1 * Cp.gen()])
+            newJ = prod(
+                (double_integral_zero_infty(Phi, t1, t2) for t1, t2 in limits)
+            ) ** ZZ(sign)
+            Jlist.append(newJ)
+            J *= newJ
 
-            # Optimal embeddings of level one
-            fwrite("Computing optimal embeddings of level one...", outfile)
-            Wlist = find_optimal_embeddings(
-                K, use_magma=use_magma, extra_conductor=extra_conductor, magma=magma
-            )
-            fwrite("Found %s such embeddings." % len(Wlist), outfile)
-            if idx_embedding is not None:
-                if idx_embedding >= len(Wlist):
-                    fwrite(
-                        "There are not enough embeddings. Taking the index modulo %s"
-                        % len(Wlist),
-                        outfile,
-                    )
-                    idx_embedding = idx_embedding % len(Wlist)
-                fwrite("Taking only embedding number %s" % (idx_embedding), outfile)
-                Wlist = [Wlist[idx_embedding]]
-
-            # Find the orientations
-            orients = (
-                K.maximal_order()
-                .ring_generators()[0]
-                .minpoly()
-                .roots(Zmod(Np), multiplicities=False)
-            )
-            fwrite("Possible orientations: %s" % orients, outfile)
-            if len(Wlist) == 1 or idx_orientation == -1:
-                fwrite("Using all orientations, since hK = 1", outfile)
-                chosen_orientation = None
-            else:
-                fwrite("Using orientation = %s" % orients[idx_orientation], outfile)
-                chosen_orientation = orients[idx_orientation]
-
-            emblist = []
-            for i, W in enumerate(Wlist):
-                tau, gtau, sign, limits = find_tau0_and_gtau(
-                    v0,
-                    Np,
-                    W,
-                    algorithm=algorithm,
-                    orientation=chosen_orientation,
-                    extra_conductor=extra_conductor,
-                )
-                fwrite(
-                    "n_evals = %s" % sum((num_evals(t1, t2) for t1, t2 in limits)),
-                    outfile,
-                )
-                emblist.append((tau, gtau, sign, limits))
-
-            # Get the cohomology class from E
-            Phi = get_overconvergent_class_matrices(
-                P,
-                E,
-                prec,
-                sign_at_infinity,
-                use_ps_dists=use_ps_dists,
-                use_sage_db=use_sage_db,
-                progress_bar=progress_bar,
-            )
-
-            J = 1
-            for i, emb in enumerate(emblist):
-                fwrite(
-                    "Computing %s-th period, attached to the embedding: %s"
-                    % (i, Wlist[i].list()),
-                    outfile,
-                )
-                tau, gtau, sign, limits = emb
-                n_evals = sum((num_evals(t1, t2) for t1, t2 in limits))
-                fwrite(
-                    "Computing one period...(total of %s evaluations)" % n_evals,
-                    outfile,
-                )
-                newJ = prod(
-                    (double_integral_zero_infty(Phi, t1, t2) for t1, t2 in limits)
-                ) ** ZZ(sign)
-                Jlist.append(newJ)
-                J *= newJ
-    else:  # input_data is not None
-        Phi, J = input_data[1:3]
     fwrite("Integral done. Now trying to recognize the point", outfile)
     fwrite("J_psi = %s" % J, outfile)
     fwrite("g belongs to %s" % J.parent(), outfile)
