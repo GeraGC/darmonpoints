@@ -901,9 +901,15 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
             self._Omax_magma = info_magma._Omax_magma
             if O_magma is None:
                 if self.level != ZZ(1):
-                    self._O_magma = info_magma._O_magma.pMaximalOrder(
-                        "%s*%s" % (ZZ(info_magma.level // self.level), ZZ_magma.name())
-                    )
+                    # We compute the additional level needed to reach self.level and an Eichler order of that level.
+                    missing_level = ZZ(self.level // info_magma.level)
+                    missing_order = self._Omax_magma.Order(f"{missing_level}*{ZZ_magma.name()}")
+                    # We intersect the already computed order with the missing_order to get an order of level self.level.
+                    self._O_magma = self.magma(
+                        f"{info_magma._O_magma.name()} meet {missing_order.name()}"
+                        )
+                    assert self.magma(f"{self._O_magma.name()} meet {missing_order.name()} eq {self._O_magma.name()}")
+                    assert self.magma(f"Discriminant({self._O_magma.name()}) eq {self.level*self.discriminant}*{ZZ_magma.name()}")
                 else:
                     self._O_magma = self._Omax_magma
             else:
