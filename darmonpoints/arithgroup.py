@@ -869,7 +869,7 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
             verbose("Saved to file")
 
     def _init_magma_objects(
-        self, info_magma=None, O_magma=None
+        self, info_magma=None, O_magma=None, intersection=None
     ):  # Rational quaternions
         wtime = walltime()
         verbose("Calling _init_magma_objects...")
@@ -900,18 +900,25 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
             self._B_magma = info_magma._B_magma
             self._Omax_magma = info_magma._Omax_magma
             if O_magma is None:
-                if self.level != ZZ(1):
-                    # We compute the additional level needed to reach self.level and an Eichler order of that level.
-                    missing_level = ZZ(self.level // info_magma.level)
-                    missing_order = self._Omax_magma.Order(f"{missing_level}*{ZZ_magma.name()}")
-                    # We intersect the already computed order with the missing_order to get an order of level self.level.
-                    self._O_magma = self.magma(
-                        f"{info_magma._O_magma.name()} meet {missing_order.name()}"
+                if intersection is None:
+                    if self.level != ZZ(1):
+                        # We compute the additional level needed to reach self.level and an Eichler order of that level.
+                        missing_level = ZZ(self.level // info_magma.level)
+                        missing_order = self._Omax_magma.Order(f"{missing_level}*{ZZ_magma.name()}")
+                        # We intersect the already computed order with the missing_order to get an order of level self.level.
+                        self._O_magma = self.magma(
+                            f"{info_magma._O_magma.name()} meet {missing_order.name()}"
                         )
-                    assert self.magma(f"{self._O_magma.name()} meet {missing_order.name()} eq {self._O_magma.name()}")
-                    assert self.magma(f"Discriminant({self._O_magma.name()}) eq {self.level*self.discriminant}*{ZZ_magma.name()}")
+                        assert self.magma(f"{self._O_magma.name()} meet {missing_order.name()} eq {self._O_magma.name()}")
+                        assert self.magma(f"Discriminant({self._O_magma.name()}) eq {self.level*self.discriminant}*{ZZ_magma.name()}")
+                    else:
+                        self._O_magma = self._Omax_magma
                 else:
-                    self._O_magma = self._Omax_magma
+                    self._O_magma = self.magma(
+                        f"{info_magma._O_magma.name()} meet {intersection._O_magma.name()}"
+                    )
+                    assert self.magma(f"{self._O_magma.name()} meet {intersection._O_magma.name()} eq {self._O_magma.name()}")
+                    assert self.magma(f"Discriminant({self._O_magma.name()}) eq {self.level*self.discriminant}*{ZZ_magma.name()}")
             else:
                 self._O_magma = self.magma.Order([self._B_magma(o) for o in O_magma])
             if self._compute_presentation:
@@ -1657,7 +1664,7 @@ class ArithGroup_nf_generic(ArithGroup_generic):
         a, b = self.B.invariants()
         return f"Arithmetic Group attached to quaternion algebra with a = {a}, b = {b} and level = {self.level}"
 
-    def _init_magma_objects(self, info_magma=None):  # NF generic
+    def _init_magma_objects(self, info_magma=None, intersection=None):  # NF generic
         r"""
         Initializes different Magma objects needed for calculations:
 
@@ -1756,8 +1763,20 @@ class ArithGroup_nf_generic(ArithGroup_generic):
                         [(on + i) / 2, (j + k) / 2, Pgen * (j - k) / 2, (on - i) / 2]
                     )
                 else:
-                    M = sage_F_ideal_to_magma(self._F_magma, self.level)
-                    self._O_magma = info_magma._Omax_magma.Order(M)
+                    if intersection is None:
+                        # We compute the missing level and the intersection order
+                        missing_level = sage_F_ideal_to_magma(self._F_magma, self.level / info_magma.level)
+                        missing_order = info_magma._Omax_magma.Order(missing_level)
+
+                        self._O_magma = self.magma(
+                            f"{info_magma._O_magma.name()} meet {missing_order.name()}"
+                        )
+                    else:
+                        self._O_magma = self.magma(
+                            f"{info_magma._O_magma.name()} meet {intersection._O_magma.name()}"
+                        )
+                        assert self.magma(f"{self._O_magma.name()} meet {intersection._O_magma.name()} eq {self._O_magma.name()}")
+                        assert self.magma(f"{sage_F_ideal_to_magma(self._F_magma, self.level)} eq Discriminant({self._O_magma.name()})")
             else:
                 self._O_magma = self._Omax_magma
             try:
