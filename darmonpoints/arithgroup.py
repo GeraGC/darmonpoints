@@ -1898,9 +1898,9 @@ class ArithGroup_nf_generic(ArithGroup_generic):
             and K.gen(0).norm(K.base_ring()) == mu.reduced_norm()
         )
 
-        found = False
+        #found = False
         coords = lambda x: K(x).list()  # K.gen().coordinates_in_terms_of_powers()
-        phi = K.hom([mu, self.B(self.F.gen())], check=False)
+        #phi = K.hom([mu, self.B(self.F.gen())], check=False)
         u0 = find_the_unit_of(self.F, K)
         assert u0.is_integral() and (1 / u0).is_integral()
         u = u0
