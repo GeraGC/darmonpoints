@@ -44,6 +44,9 @@ class HomologyElement(ModuleElement):
             self._val = [V(o) for o in data]
         ModuleElement.__init__(self, parent)
 
+    def __iter__(self):
+        return iter(zip(self.parent().group().gens(), self._val))
+
     def values(self):
         return self._val
 

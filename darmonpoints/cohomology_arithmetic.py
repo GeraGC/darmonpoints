@@ -31,6 +31,7 @@ import os
 from collections import defaultdict
 from itertools import chain, groupby, islice, product, starmap, tee
 from time import sleep
+from copy import deepcopy
 
 from sage.arith.all import dedekind_sum, gcd, lcm, xgcd
 from sage.categories.action import Action
@@ -1623,9 +1624,6 @@ def get_twodim_cocycle(
     else:
         disc = bad_locus
 
-    if F == QQ:
-        x = QQ["x"].gen()
-        F = NumberField(x, names="a")
     q = ZZ(1)
     g0 = None
     num_hecke_operators = 0
@@ -1714,14 +1712,14 @@ def get_twodim_cocycle(
                             good_components.append(
                                 (
                                     U0.denominator() * U0,
-                                    hecke_data + [(qq.gens_reduced()[0], Aq)],
+                                    deepcopy(hecke_data) + [(qq.gens_reduced()[0], Aq)],
                                 )
                             )
                         else:  # U0.dimension() > 2 or not is_irred
                             component_list.append(
                                 (
                                     U0.denominator() * U0,
-                                    hecke_data + [(qq.gens_reduced()[0], Aq)],
+                                    deepcopy(hecke_data) + [(qq.gens_reduced()[0], Aq)],
                                 )
                             )
                 if len(good_components) > 0 and not return_all:

@@ -103,7 +103,9 @@ class DivisorsElement(ModuleElement):
             self._ptdict[hP] = P
 
     def apply_map(self, f):
-        return self.parent()([(n, f(self._ptdict[hP])) for hP, n in self._data.items()])
+        new_data = [(n, f(self._ptdict[hP])) for hP, n in self._data.items()]
+        new_parent = Divisors(new_data[0][1].parent())
+        return new_parent(new_data)
 
     def restrict(self, condition):
         return self.parent()(

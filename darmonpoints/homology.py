@@ -264,6 +264,7 @@ class OneChainsElement(TensorElement):
         G = HH.group()
         aux_element = V.an_element()
         Gab = G.abelianization()
+        oldvals = list(self._data.values())
         xlist = [(g, degree_map(v)) for g, v in zip(self._data.keys(), oldvals)]
         sum_abxlist = sum([Gab((x, n)) for x, n in xlist])
         x_ord = sum_abxlist.order()
@@ -275,7 +276,7 @@ class OneChainsElement(TensorElement):
         else:
             xlist = [(x, x_ord * n) for x, n in xlist]
         gwordlist, rel = G.calculate_weight_zero_word(xlist, separated=True)
-        oldvals = list(self._data.values())
+
         counter = 0
         assert len(gwordlist) == len(oldvals)
         newdict = defaultdict(V)
