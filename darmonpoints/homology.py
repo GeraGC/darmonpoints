@@ -41,10 +41,10 @@ from .util import *
 
 
 def lattice_homology_cycle(
-    p, G, wp, xlist, prec, tau=None, outfile=None, smoothen=None
+    p, G, wp, xlist, prec, tau=None, outfile=None, smoothen=None, base=None
 ):
     if tau is None:
-        Cp = Qq(p**2, prec, names="g")
+        Cp = Qq(p**2, prec, names="g") if base is None else base
         wpinv_mat = (G.embed(wp, prec) ** -1).change_ring(Cp)
         a, b, c, d = wpinv_mat.list()
         tau = (a * Cp.gen() + b) / (c * Cp.gen() + d)
@@ -155,9 +155,12 @@ class TensorElement(ModuleElement):
         return self.parent(newdict)
 
     def mult_by(self, a):
-        return self.__rmul__(a)
+        a = ZZ(a)
+        newdict = {g: a * v for g, v in self._data.items()} if a != 0 else {}
+        return self.parent()(newdict)
 
     def __rmul__(self, a):
+        a = ZZ(a)
         newdict = {g: a * v for g, v in self._data.items()} if a != 0 else {}
         return self.parent()(newdict)
 
@@ -250,7 +253,33 @@ class OneChainsElement(TensorElement):
             * gh|v = g|v + h|g^-1 v - delta(g|h|v))
             * g^a|v = g|(v + g^-1v + ... + g^-(a-1)v) - delta(g|g^(a-1)|v + g|g^(a-2)|g^-1v + ... + g|g|g^(2-n)v)
             * g^(-a)|v = - g^a|g^av + delta(g^-a|g^a|v + 1|1|v)
+
+        TESTS:
+
+        The chain below is only torsion (of order 2) in the abelianization, so
+        it has to be replaced by twice itself. Both the values of the chain and
+        the relations added to kill its weight must end up scaled consistently,
+        or the answer is not valued in degree-zero divisors::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: from darmonpoints.divisors import Divisors
+            sage: from darmonpoints.homology import OneChains
+            sage: import sys, io
+            sage: GS = BigArithGroup(5, 1, 11, base=QQ, grouptype='PSL2', use_shapiro=False, outfile='/tmp/darmonpoints.tmp')
+            sage: G = GS.small_group()
+            sage: Cp = Qq(25, 10, names='g')
+            sage: Div = Divisors(Cp)
+            sage: c = OneChains(G, Div)({G.gen(13): Div(Cp.gen() + 2)})
+            sage: _out, sys.stdout = sys.stdout, io.StringIO()  # silence the progress bar
+            sage: ans, x_ord = c.zero_degree_equivalent(allow_multiple=True)
+            sage: sys.stdout = _out
+            sage: x_ord, ans.is_degree_zero_valued()
+            (2, True)
         """
+        # Keep the caller's argument around: the final check re-derives its own
+        # map, and forwarding the one we filled in below would warn about a
+        # "provided" degree_map that the caller never provided.
+        given_degree_map = degree_map
         if isinstance(self.parent().coefficient_module(), Divisors):
             if degree_map is not None:
                 warn('Using provided degree_map')
@@ -264,6 +293,7 @@ class OneChainsElement(TensorElement):
         HH = self.parent()
         V = HH.coefficient_module()
         G = HH.group() # Arithmetic group G = F/R
+        ngens = len(G.gens())
         Gab = G.abelianization() # G^{ab} = F^{ab}/R^{ab}
         # The elements of V forming the 1-chain, which are paired with the elements of G in self._data.keys()
         oldvals = list(self._data.values())
@@ -273,7 +303,7 @@ class OneChainsElement(TensorElement):
         sum_abxlist = sum([Gab((x, n)) for x, n in xlist])
         # Order in the abelianization
         x_ord = sum_abxlist.order()
-        print(f"{x_ord = }")
+        verbose(f"{x_ord = }")
         # We need a torsion element in the abelianization to reduce to degree zero
         if x_ord == Infinity or (x_ord > 1 and not allow_multiple):
             raise ValueError(
@@ -281,11 +311,19 @@ class OneChainsElement(TensorElement):
                 % (sum_abxlist, x_ord)
             ) # TODO: if x_ord is Infinity, find a Hecke operator that kills it, and apply it to reduce to torsion
         else:
-            # We adjust the weight of our 1-chain to be as x_ord * C, which is trivial in the abelianization
+            # We adjust the weight of our 1-chain to be x_ord * C, which is trivial in the abelianization.
+            # The scaling has to happen here, on the values themselves: the relation
+            # terms appended below already carry their own multiplicity and must not
+            # be scaled by x_ord again.
             xlist = [(x, x_ord * n) for x, n in xlist]
             gwordlist = [x.word_rep for x, n in xlist]
+            oldvals = [x_ord * v for v in oldvals]
         # Let C be our 1-chain, degC \in R^{ab}, so we find the relations in R^{ab} that satisfy degC + \sum r_i^{ab} = 0 in F^{ab}
-        _, rel = G.calculate_weight_zero_word(xlist, separated=True)
+        weight_vector = sum(n * vector(ZZ, get_weight_vector(x.word_rep, ngens)) for x, n in xlist)
+        rel = G._calculate_relation(weight_vector, separated=True)
+        for c, r in rel:
+            gwordlist.append(r)
+            oldvals.append(ZZ(c) * V.an_element(degree=1))
         counter = 0
         assert len(gwordlist) == len(oldvals)
         verbose(f"{gwordlist=}")
@@ -297,8 +335,8 @@ class OneChainsElement(TensorElement):
         # Decompose each (g,v) tensor in the 1-cycle into a sum of tensors of the form (g_i, v_i) where g_i is a generator of G
         # We store all 1-boundaries used in boundary_list
         for gword, v in zip(gwordlist, oldvals):
-            print("Processing %s|%s" % (gword, v))
-            newv = V(x_ord*v)
+            verbose("Processing %s|%s" % (gword, v))
+            newv = V(v)
             for i, a in tietze_to_syllables(gword): # gi^a|v
                 oldv = V(newv)
                 g = G.gen(i)
@@ -317,38 +355,17 @@ class OneChainsElement(TensorElement):
                 float(QQ(counter) / QQ(len(oldvals))),
                 "Reducing to degree zero equivalent",
             )
-        # Generate a generic degree 1 element of V to use in the relations
-        aux_element = V.an_element(degree=1)
-        verbose(f"{aux_element=}")
-        # We decompose each tensor (r_i, v) into a sum of tensors of the form (g_i, v_i) where g_i is a generator of G
-        # We store all 1-boundaries used in boundary_list
-        for b, r in rel:
-            print("Processing relation %s with coefficient %s" % (r, b))
-            newv = V(aux_element)
-            for i, a in tietze_to_syllables(r):
-                oldv = V(newv)
-                g = G.gen(i)
-                newv = (g**-a) * V(oldv)
-                sign = 1
-                if a < 0:
-                    a = -a
-                    oldv = (g**a) * V(oldv)
-                    sign = -1
-                for j in range(a):
-                    newdict[g] += ZZ(sign) * ZZ(b) * oldv
-                    boundary_list.append((i, g, g**(a-j-1), g * (-ZZ(sign)*ZZ(b)*V(oldv))))
-                    oldv = (g**-1) * oldv
+
         verbose("Done zero_degree_equivalent")
         ans = HH(newdict)
         # The final result should be valued in degree-zero divisors
-        if not ans.is_degree_zero_valued(degree_map=degree_map):
+        if not ans.is_degree_zero_valued(degree_map=given_degree_map):
             print(
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
             )
             print("The cycle is not valued in degree-zero divisors.")
             print("EXPECT THINGS TO BREAK BADLY")
-            print("residue:")
-            print([(ky, v.degree()) for ky, v in ans._data.items()])
+            print([(ky, degree_map(v)) for ky, v in ans._data.items()])
             print(
                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
             )
@@ -435,11 +452,41 @@ class OneChainsElement(TensorElement):
         return self.act_by_hecke(r, prec=prec) - self.mult_by(ZZ(rnorm + 1))
 
     def act_by_poly_hecke(self, r, f, prec=None):
+        r"""
+        Act on this 1-chain by ``f(T_r)``.
+
+        TESTS:
+
+        The action must be linear in ``f``, in particular in the unit of its
+        factorization -- which the two branches below have to account for
+        differently::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: from darmonpoints.divisors import Divisors
+            sage: from darmonpoints.homology import OneChains
+            sage: GS = BigArithGroup(5, 1, 11, base=QQ, grouptype='PSL2', use_shapiro=False, outfile='/tmp/darmonpoints.tmp')
+            sage: G = GS.small_group()
+            sage: Cp = Qq(25, 10, names='g')
+            sage: Div = Divisors(Cp)
+            sage: c = OneChains(G, Div)({G.gen(0): Div(Cp.gen() + 2)})
+            sage: x = QQ['x'].gen()
+            sage: is_zero = lambda ch: all(v.is_zero() for v in ch._data.values())
+            sage: is_zero(c.act_by_poly_hecke(2, 2*(x+1), prec=10) - c.act_by_poly_hecke(2, x+1, prec=10).mult_by(2))  # single-factor branch
+            True
+            sage: f = (x+1) * (x^2-3)
+            sage: is_zero(c.act_by_poly_hecke(2, 2*f, prec=10) - c.act_by_poly_hecke(2, f, prec=10).mult_by(2))  # recursive branch
+            True
+        """
         if f == 1:
             return self
         if prec is None:
             prec = self.parent().coefficient_module().base_ring().precision_cap()
         facts = f.factor()
+        # NOTE the asymmetry between the two branches below: the Horner
+        # evaluation runs over the coefficients of f itself, so it already
+        # accounts for the unit of the factorization, while the recursive
+        # branch only ever multiplies the *monic* irreducible factors and so
+        # has to put the unit back by hand.
         if len(facts) == 1:
             verbose("Acting by f = %s and r = %s" % (f.factor(), r))
             x = f.parent().gen()
@@ -450,6 +497,7 @@ class OneChainsElement(TensorElement):
                 ans += self.mult_by(c)
             return ans
         else:
+            u = facts.unit()
             f0 = facts[0][0]
             ans = self.act_by_poly_hecke(r, f0, prec=prec)
             for i in range(facts[0][1] - 1):
@@ -457,7 +505,7 @@ class OneChainsElement(TensorElement):
             for f0, e in facts[1:]:
                 for i in range(e):
                     ans = ans.act_by_poly_hecke(r, f0, prec=prec)
-            return ans
+            return ans.mult_by(u)
 
 
 class OneChains(TensorProduct):

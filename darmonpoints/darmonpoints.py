@@ -368,7 +368,6 @@ def darmon_point(
                 use_shapiro=use_shapiro,
                 nscartan=Ncartan,
             )
-        return G
         # Define the cycle ( in H_1(G,Div^0 Hp) )
         Coh = ArithCoh(G)
         while True:

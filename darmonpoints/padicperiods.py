@@ -1237,10 +1237,16 @@ def get_pseudo_orthonormal_homology(G, cocycles, hecke_data=None, outfile=None):
     ker = get_homology_kernel(G, hecke_data=tuple(hecke_data))
     assert len(ker) == 2
     f0, f1 = cocycles
-    a00 = f0.pair_with_cycle(ker[0])
-    a01 = f0.pair_with_cycle(ker[1])
-    a10 = f1.pair_with_cycle(ker[0])
-    a11 = f1.pair_with_cycle(ker[1])
+    if G.use_shapiro():
+        pair = lambda f, xi : f.pair_with_cycle(xi)
+    else:
+        def pair(f, xi):
+            return sum(f.evaluate(g) * a for g, a in zip(xi.parent().group().gens(), xi.values()))
+
+    a00 = pair(f0, ker[0])
+    a01 = pair(f0, ker[1])
+    a10 = pair(f1, ker[0])
+    a11 = pair(f1, ker[1])
     a00, a01, a10, a11 = ZZ(a00), ZZ(a01), ZZ(a10), ZZ(a11)
     determinant = a00 * a11 - a01 * a10
     fwrite(
