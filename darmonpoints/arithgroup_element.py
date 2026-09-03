@@ -32,6 +32,7 @@ from sage.rings.number_field.number_field import QuadraticField
 from sage.rings.real_mpfr import RealField
 from sage.rings.padics.factory import Qp
 from sage.structure.element import MultiplicativeGroupElement
+from sage.structure.richcmp import op_EQ, op_NE, richcmp
 
 from .util import *
 
@@ -87,13 +88,27 @@ class ArithGroupElement(MultiplicativeGroupElement):
     def size(self):
         return len(self.word_rep)
 
+    def _is_projective(self):
+        r"""
+        Whether the ambient group is a projective one, in which case elements
+        are only well defined up to scalars.
+        """
+        return "P" in (self.parent()._grouptype or "")
+
     def __hash__(self):
         try:
-            return hash(
-                (hash(self.parent()), hash(self.quaternion_rep.coefficient_tuple()))
-            )
+            coeffs = tuple(self.quaternion_rep.coefficient_tuple())
         except (TypeError, ValueError, AttributeError):
-            return hash((hash(self.parent()), hash(tuple(self.quaternion_rep.list()))))
+            coeffs = tuple(self.quaternion_rep.list())
+        if self._is_projective():
+            # Elements are only defined up to scalars, so hash a normalized
+            # representative. This is coarser than equality (which is up to
+            # units), but a coarser hash is still consistent with it.
+            for c in coeffs:
+                if c != 0:
+                    coeffs = tuple(o / c for o in coeffs)
+                    break
+        return hash((hash(self.parent()), hash(coeffs)))
 
     def _repr_(self):
         return str(self.quaternion_rep)
@@ -131,12 +146,12 @@ class ArithGroupElement(MultiplicativeGroupElement):
     def _eq_(self, right):
         selfquatrep = self.quaternion_rep
         rightquatrep = right.quaternion_rep
-        if "P" not in self.parent()._grouptype:
+        if not self._is_projective():
             return selfquatrep == rightquatrep
-        tmp = selfquatrep / rightquatrep
-        try:
-            tmp = self.parent().F(tmp)
-        except TypeError:
+        # In a projective group the two elements are equal as soon as they
+        # differ by a unit scalar.
+        tmp = self._scalar_part(selfquatrep / rightquatrep)
+        if tmp is None:
             return False
         if not tmp.is_integral():
             return False
@@ -145,10 +160,52 @@ class ArithGroupElement(MultiplicativeGroupElement):
         else:
             return True
 
-    def __lt__(self, right):
-        if "P" not in self.parent()._grouptype:
-            return self.quaternion_rep < right.quaternion_rep
-        return False
+    def _scalar_part(self, x):
+        r"""
+        Return ``x`` as an element of the base field if it is a scalar, and
+        ``None`` otherwise. ``x`` may be a quaternion or, when the group is
+        given by matrices, a matrix.
+        """
+        F = self.parent().F
+        try:
+            return F(x)
+        except (TypeError, ValueError):
+            pass
+        try:
+            if not x.is_scalar():
+                return None
+            return F(x[0, 0])
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _richcmp_(self, right, op):
+        r"""
+        Compare two elements.
+
+        Sage routes ``==``, ``<``, ... through ``_richcmp_``, so the comparison
+        logic has to live here: a method named ``_eq_`` alone is never called,
+        which would silently leave equality comparing by identity.
+
+        TESTS::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: GS = BigArithGroup(5, 6, 1, use_shapiro=False, outfile='/tmp/darmonpoints.tmp') #  optional - magma
+            sage: G = GS.small_group() #  optional - magma
+            sage: g = G.gen(0) #  optional - magma
+            sage: g * g**-1 == G(1) #  optional - magma
+            True
+            sage: hash(g * g**-1) == hash(G(1)) #  optional - magma
+            True
+        """
+        if op == op_EQ:
+            return self._eq_(right)
+        if op == op_NE:
+            return not self._eq_(right)
+        if self._is_projective():
+            # No meaningful order on a projective group; report the elements as
+            # incomparable rather than imposing a bogus one.
+            return False
+        return richcmp(self.quaternion_rep, right.quaternion_rep, op)
 
     def _reduce_word(self):
         if not self.has_word_rep:

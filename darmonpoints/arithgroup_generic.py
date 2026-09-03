@@ -31,6 +31,7 @@ from sage.modules.free_module import FreeModule_generic
 from sage.rings.qqbar import AA
 from sage.rings.rational_field import Q as QQ
 from sage.rings.real_mpfr import RR
+from sage.rings.integer import Integer
 from sage.rings.integer_ring import Z as ZZ
 from sage.rings.complex_mpfr import ComplexField
 from sage.rings.number_field.number_field import NumberField
@@ -142,7 +143,11 @@ class ArithGroup_generic(AlgebraicGroup):
         )
 
     def _element_constructor_(self, x):
-        if isinstance(x, int):
+        # NOTE: sage integers are not python ints, so both have to be caught
+        # here. Otherwise G(1) falls through to the generic branch below and
+        # builds an element whose quaternion_rep is the integer 1 instead of
+        # self.B.one(), which then hashes differently from the true identity.
+        if isinstance(x, (int, Integer)):
             if x == 0:
                 return self.zero()
             elif x == 1:
@@ -456,6 +461,8 @@ class ArithGroup_generic(AlgebraicGroup):
         try:
             gens = self._gens
         except AttributeError:
+            if not hasattr(self, "_init_kwargs"):
+                self._init_kwargs = {}
             self._init_geometric_data(**self._init_kwargs)
             self._compute_presentation = True
             gens = self._gens
@@ -479,7 +486,13 @@ class ArithGroup_generic(AlgebraicGroup):
         if num_rels == 0:
             return []
         f = (ZZ**num_rels).hom(relmat.rows())
-        linear_combination = f.lift(wt)
+        try:
+            linear_combination = f.lift(wt)
+        except ValueError:
+            raise ValueError(
+                "The weight vector %s is not in the lattice spanned by the "
+                "relations (relation matrix = %s)" % (wt, relmat)
+            )
         ans = []
         for i, lam in enumerate(linear_combination):
             relation = relwords[i]
@@ -499,6 +512,27 @@ class ArithGroup_generic(AlgebraicGroup):
         return ans
 
     def calculate_weight_zero_word(self, xlist, separated=False):
+        r"""
+        Write the formal combination ``xlist`` of group elements as a word of
+        weight zero, by appending the relations needed to kill its weight.
+
+        With ``separated=True`` the answer is a list of ``(multiplicity, word)``
+        pairs; otherwise it is a single word.
+
+        TESTS::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: from darmonpoints.util import get_weight_vector
+            sage: GS = BigArithGroup(5, 1, 11, base=QQ, grouptype='PSL2', use_shapiro=False, outfile='/tmp/darmonpoints.tmp')
+            sage: G = GS.small_group()
+            sage: g = G.gen(0) * G.gen(1)
+            sage: G.calculate_weight_zero_word([(g, 1), (g, -1)])
+            [1, 2, -2, -1]
+            sage: G.calculate_weight_zero_word([(g, 1), (g, -1)], separated=True)
+            [(1, [1, 2]), (-1, [1, 2])]
+            sage: sum(get_weight_vector(G.calculate_weight_zero_word([(g, 2), (g, -2)]), len(G.gens())))
+            0
+        """
         Gab = self.abelianization()
         abxlist = [n * Gab(x) for x, n in xlist]
         sum_abxlist = vector(sum(abxlist))
@@ -506,16 +540,27 @@ class ArithGroup_generic(AlgebraicGroup):
             raise ValueError(
                 "Must yield trivial element in the abelianization (%s)" % (sum_abxlist)
             )
-        oldwordlist = [n * x.word_rep[:] for x, n in xlist]
         ngens = len(self.gens())
-        weight_vector = list((get_weight_vector(n * x.word_rep, ngens) for x, n in xlist))
-        return oldwordlist, self._calculate_relation(
-            [sum(o) for o in zip(*weight_vector)], separated=separated
+        weight_vector = sum(
+            n * vector(ZZ, get_weight_vector(x.word_rep, ngens)) for x, n in xlist
         )
+        rel = self._calculate_relation(weight_vector, separated=separated)
+        if separated:
+            return [(n, x.word_rep[:]) for x, n in xlist] + rel
+        # Here the answer is a single word, so the words of xlist have to be
+        # concatenated (inverting them when the multiplicity is negative,
+        # since ``n * word`` would silently give the empty word for n < 0).
+        oldword = []
+        for x, n in xlist:
+            word = x.word_rep[:]
+            if n < 0:
+                word = [-i for i in reversed(word)]
+                n = -n
+            oldword += ZZ(n) * word
+        return oldword + rel
 
     def decompose_into_commutators(self, gamma, n=1):
-        (oldwordlist,), rel = self.calculate_weight_zero_word([(gamma, n)])
-        oldword = oldwordlist + rel
+        oldword = self.calculate_weight_zero_word([(gamma, n)])
         # At this point oldword has weight vector 0
         # We use the identity:
         # C W0 g^a W1 = C [W0,g^a] g^a W0 W1

@@ -606,10 +606,41 @@ class ArithCoh(CohomologyGroup, UniqueRepresentation):
 
         Apply the l-th Hecke operator operator to ``c``.
 
+        TESTS:
+
+        Shapiro's isomorphism is Hecke-equivariant, so the Hecke matrices must
+        not depend on whether the group was built with ``use_shapiro``::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: from darmonpoints.cohomology_arithmetic import ArithCoh
+            sage: kwargs = dict(base=QQ, grouptype='SL2', outfile='/tmp/darmonpoints.tmp')
+            sage: C0 = ArithCoh(BigArithGroup(5, 1, 11, use_shapiro=False, **kwargs))
+            sage: C1 = ArithCoh(BigArithGroup(5, 1, 11, use_shapiro=True, **kwargs))
+            sage: C0.dimension() == C1.dimension()
+            True
+            sage: all(C0.hecke_matrix(l, use_magma=False).charpoly()
+            ....:     == C1.hecke_matrix(l, use_magma=False).charpoly() for l in [2, 3, 7])
+            True
+
+        The Hecke operators commute, and send cocycles to cocycles::
+
+            sage: M2 = C1.hecke_matrix(2, use_magma=False)
+            sage: M3 = C1.hecke_matrix(3, use_magma=False)
+            sage: M2 * M3 == M3 * M2
+            True
+            sage: all(C1.apply_hecke_operator(c, 2, use_magma=False).check_cocycle_property()
+            ....:     for c in C1.gens())
+            True
         """
         # verbose('Entering apply_hecke_operator')
+        # Under Shapiro self.group() is the LARGE group, but the cohomology is
+        # that of the small one (Shapiro's isomorphism), so the Hecke data has
+        # to be the small group's.
+        hecke_group = (
+            self.S_arithgroup().small_group() if self.use_shapiro() else self.group()
+        )
         if hecke_reps is None:
-            hecke_reps = self.group().get_hecke_reps(l, use_magma=use_magma, g0=g0)
+            hecke_reps = hecke_group.get_hecke_reps(l, use_magma=use_magma, g0=g0)
         # verbose('Got hecke reps')
         V = self.coefficient_module()
         padic = not V.base_ring().is_exact()
@@ -618,11 +649,51 @@ class ArithCoh(CohomologyGroup, UniqueRepresentation):
             prec = V.base_ring().precision_cap()
         else:
             prec = None
-        vals = []
         R = V.base_ring()
         gammas = group.gens()
+        if self.use_shapiro():
+            # Under Shapiro the coefficient module is coinduced, and a coinduced
+            # element can only be acted on by elements of the S-arithmetic
+            # group: the action reduces x_i * g in the amalgam, and
+            # `is_in_Gamma0loc` only accepts determinant 1, so a Hecke
+            # representative (of determinant l) can never be reduced and the
+            # reduction raises instead. The coset bookkeeping therefore has to
+            # happen here -- exactly as `apply_Up` already does it -- leaving
+            # the representative to act on the inner coefficient module only.
+            G = self.S_arithgroup()
+            Gn = G.large_group()
+            W = V.coefficient_module()
+            vals = []
+            for gamma in gammas:
+                gamma_q = gamma.quaternion_rep
+                newval = []
+                for xi in G.coset_reps():
+                    # x_i * gamma = delta * x_j with delta in the small group,
+                    # and the value at the coset x_i is the small-group cocycle
+                    # (Shapiro) evaluated at t_g(delta).
+                    delta = hecke_group(
+                        G.get_coset_ti(set_immutable(xi * gamma_q))[0]
+                    )
+                    newval.append(
+                        sum(
+                            (
+                                g
+                                * c.evaluate(
+                                    Gn(
+                                        hecke_group.get_hecke_ti(
+                                            g, delta, l, use_magma, reps=hecke_reps
+                                        )
+                                    ),
+                                    at_identity=True,
+                                )
+                                for g in hecke_reps
+                            ),
+                            W(0),
+                        )
+                    )
+                vals.append(V(newval))
+            return scale * self(vals)
         vals = [V(0) for gamma in gammas]
-        input_vector = []
         # verbose('Calculating action')
         for j, gamma in enumerate(gammas):
             # verbose('generator %s/%s...'%(j+1,len(gammas)))
@@ -680,9 +751,40 @@ class CohArbitrary(CohomologyGroup):
             CohomologyGroup.__init__(self, G, V)
 
     def act_by_poly_hecke(self, c, r, f, **kwargs):
+        r"""
+        Act on the cocycle ``c`` by ``f(T_r)``.
+
+        TESTS:
+
+        The action must be linear in ``f``, in particular in the unit of its
+        factorization -- which the two branches below have to account for
+        differently::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: from darmonpoints.cohomology_arithmetic import CohArbitrary
+            sage: GS = BigArithGroup(5, 1, 11, base=QQ, grouptype='PSL2', use_shapiro=False, outfile='/tmp/darmonpoints.tmp')
+            sage: Coh = CohArbitrary(GS.small_group(), ZZ**1)
+            sage: c = Coh.gen(0)
+            sage: x = QQ['x'].gen()
+            sage: Coh.act_by_poly_hecke(c, 2, QQ['x'](1)) == c
+            True
+            sage: g = x + 1  # single-factor branch
+            sage: Coh.act_by_poly_hecke(c, 2, 2*g, use_magma=False) == 2 * Coh.act_by_poly_hecke(c, 2, g, use_magma=False)
+            True
+            sage: g = (x+1) * (x^2-3)  # recursive branch
+            sage: Coh.act_by_poly_hecke(c, 2, 2*g, use_magma=False) == 2 * Coh.act_by_poly_hecke(c, 2, g, use_magma=False)
+            True
+        """
         if f == 1:
-            return self
+            # NOTE: the answer is the (unchanged) cocycle c, not self, which is
+            # the cohomology group that c lives in.
+            return c
         facts = f.factor()
+        # NOTE the asymmetry between the two branches below: the Horner
+        # evaluation runs over the coefficients of f itself, so it already
+        # accounts for the unit of the factorization, while the recursive
+        # branch only ever multiplies the *monic* irreducible factors and so
+        # has to put the unit back by hand.
         if len(facts) == 1:
             verbose("Acting by f = %s and r = %s" % (f.factor(), r))
             x = f.parent().gen()
@@ -693,14 +795,16 @@ class CohArbitrary(CohomologyGroup):
                 ans += ZZ(ai) * c
             return ans
         else:
+            u = facts.unit()
             f0 = facts[0][0]
             ans = self.act_by_poly_hecke(c, r, f0, **kwargs)
-            for i in range(facts[0][1] - 1):
+            for _ in range(facts[0][1] - 1):
                 ans = self.act_by_poly_hecke(ans, r, f0, **kwargs)
             for f0, e in facts[1:]:
-                for i in range(e):
+                for _ in range(e):
                     ans = self.act_by_poly_hecke(ans, r, f0, **kwargs)
-            return ans
+            return ZZ(u) * ans
+
 
     def apply_hecke_operator(
         self,
@@ -731,7 +835,7 @@ class CohArbitrary(CohomologyGroup):
                 for g in hecke_reps
             )
             for gamma in group.gens()
-        ]  # DEBUG: g need not be in group...
+        ]
         return scale * self(vals)
 
 

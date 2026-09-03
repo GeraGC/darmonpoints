@@ -34,6 +34,7 @@ from sage.rings.padics.factory import Qp, Zp
 from sage.rings.padics.precision_error import PrecisionError
 from sage.structure.element import ModuleElement, MultiplicativeGroupElement
 from sage.structure.parent import Parent
+from sage.structure.richcmp import op_EQ, op_NE
 from sage.structure.sage_object import SageObject, load, save
 
 from .util import *
@@ -97,6 +98,60 @@ class CohomologyElement(ModuleElement):
 
     def _repr_(self):
         return "Cohomology class in %s" % self.parent()
+
+    def _richcmp_(self, right, op):
+        r"""
+        Compare two cohomology classes by their values on the generators.
+
+        Sage routes ``==`` and ``!=`` through ``_richcmp_``; without this the
+        comparison falls back to identity, so that two classes with identical
+        values (``2 * c`` and ``c + c``, say) compare as different.
+
+        There is no meaningful order on cohomology classes, so the ordering
+        operators are rejected rather than answered arbitrarily.
+
+        TESTS::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: from darmonpoints.cohomology_arithmetic import CohArbitrary
+            sage: GS = BigArithGroup(5, 1, 11, base=QQ, grouptype='PSL2', use_shapiro=False, outfile='/tmp/darmonpoints.tmp')
+            sage: Coh = CohArbitrary(GS.small_group(), ZZ**1)
+            sage: c = Coh.gen(0)
+            sage: 2 * c == c + c
+            True
+            sage: c == c
+            True
+            sage: c != c
+            False
+            sage: c == Coh.gen(1)
+            False
+            sage: c - c == 0
+            True
+            sage: hash(2 * c) == hash(c + c)
+            True
+            sage: c < c
+            Traceback (most recent call last):
+            ...
+            TypeError: cohomology classes are not ordered
+        """
+        if op == op_EQ:
+            return self._val == right._val
+        if op == op_NE:
+            return self._val != right._val
+        raise TypeError("cohomology classes are not ordered")
+
+    def __hash__(self):
+        r"""
+        A hash consistent with :meth:`_richcmp_`.
+
+        Values are not always hashable (Sage vectors have to be immutable
+        first), so fall back to a hash that depends only on the parent: that is
+        coarser than equality, but never inconsistent with it.
+        """
+        try:
+            return hash((self.parent(), tuple(tuple(o) for o in self._val)))
+        except (TypeError, ValueError, AttributeError, NotImplementedError):
+            return hash(self.parent())
 
     def _add_(self, right):
         return self.__class__(
@@ -312,20 +367,41 @@ class CohomologyGroup(Module):
         return self._acting_matrix(g, dim)
 
     def GA_to_local(self, x, g0=None):
+        r"""
+        Evaluate the group-algebra element ``x`` in the local action.
+
+        TESTS:
+
+        Evaluating a word through the Fox gradient (which goes through this
+        method) must agree with the naive evaluation (which does not). Pairing
+        ``coefficients()`` with ``monomials()`` by ``zip`` breaks this: the
+        former is sorted by the indexing set, the latter is not, so the two
+        disagree as soon as the group has a genuine order on its elements --
+        which is the case for ``SL2``, but not for ``PSL2``, where every order
+        comparison is ``False`` and the bug stays invisible::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: from darmonpoints.cohomology_arithmetic import ArithCoh
+            sage: GS = BigArithGroup(5, 1, 11, base=QQ, grouptype='SL2', use_shapiro=True, outfile='/tmp/darmonpoints.tmp')
+            sage: f = ArithCoh(GS).gen(0)
+            sage: words = [(4,-2,-1,4,1,-4,4), (1,2,-1,3,-2), (2,2,-1,-1,3,4)]
+            sage: all(f._evaluate_word_tietze_foxgradient(w) == f._evaluate_word_tietze_naive(w) for w in words)
+            True
+        """
+        # Each coefficient must be paired with its own monomial: coefficients()
+        # returns the coefficients sorted by the indexing set, while monomials()
+        # follows the (arbitrary) order of the underlying dictionary, so zipping
+        # the two scrambles the pairing as soon as x has two distinct coefficients.
+        ans = sum(
+            (
+                a * self.generator_acting_matrix(g)
+                for g, a in x.monomial_coefficients(copy=False).items()
+            )
+        )
         if g0 is None:
-            return sum(
-                (
-                    a * self.generator_acting_matrix(g.support()[0])
-                    for a, g in zip(x.coefficients(), x.monomials())
-                )
-            )
+            return ans
         else:
-            return self.generator_acting_matrix(g0) * sum(
-                (
-                    a * self.generator_acting_matrix(g.support()[0])
-                    for a, g in zip(x.coefficients(), x.monomials())
-                )
-            )
+            return self.generator_acting_matrix(g0) * ans
 
     def group(self):
         return self._group
