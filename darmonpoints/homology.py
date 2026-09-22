@@ -417,7 +417,7 @@ class OneChainsElement(TensorElement):
             set_immutable(gk1inv)
             gk1inv0 = self.parent().get_arith_action().emb(gk1inv, prec)
             for g, v in self._data.items():
-                ti = G.get_hecke_ti(gk1, g, l, True)
+                ti = G.get_hecke_ti(gk1, g, l, True, reps=hecke_reps)
                 try:
                     newv = v.left_act_by_matrix(gk1inv0)
                 except AttributeError:

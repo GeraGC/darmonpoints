@@ -324,7 +324,7 @@ class ArithGroup_generic(AlgebraicGroup):
             else:
                 yield prod([Ugens[i] for i in v], self.B.one())
 
-    @cached_method(key=lambda self, l, use_magma, g0, progress: (self, l))
+    @cached_method(key=lambda self, l, use_magma, g0, progress: (self, l, use_magma, g0))
     def get_hecke_reps(self, l, use_magma=True, g0=None, progress=False):  # generic
         r"""
         TESTS:
@@ -384,7 +384,7 @@ class ArithGroup_generic(AlgebraicGroup):
                 )
         return tuple([set_immutable(o) for o in reps])
 
-    @cached_method(key=lambda self, ell, hecke_reps, use_magma, g0: ell)
+    @cached_method(key=lambda self, ell, hecke_reps, use_magma, g0: (ell, use_magma, hecke_reps, g0))
     def get_hecke_data(self, ell, hecke_reps=None, use_magma=True, g0=None):
         if hecke_reps is None:
             hecke_reps = self.get_hecke_reps(ell, use_magma=use_magma, g0=g0)
