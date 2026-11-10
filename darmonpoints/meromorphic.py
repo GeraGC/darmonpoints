@@ -47,6 +47,47 @@ try:
     from .sparse_padic import SparsePadicMatrix, propagate_precisions
 except ImportError:  # the extension is not compiled
     SparsePadicMatrix = propagate_precisions = None
+
+# How the additive implementation computes the products with integer matrices
+# (see _IntegerOperator) when no mode is given: 'auto' uses the compiled kernel
+# (darmonpoints.sparse_padic) for the extensions of Qp, 'python' never uses it.
+INTEGER_MODE_VARIABLE = 'DARMONPOINTS_INTEGER_MODE'
+INTEGER_MODES = ('auto', 'python', 'compiled', 'sparse', 'dense', 'banded')
+
+
+def default_integer_mode():
+    r'''
+    The mode of the products with integer matrices of the additive
+    implementation (see _IntegerOperator) used when none is given: the value of
+    the environment variable DARMONPOINTS_INTEGER_MODE, or 'auto'.
+
+    Set it to 'python' to use the pure python products instead of the compiled
+    kernel (for example, if the compiled part breaks): the results are the same.
+
+    EXAMPLES::
+
+        sage: import os
+        sage: from darmonpoints.meromorphic import default_integer_mode
+        sage: old = os.environ.pop('DARMONPOINTS_INTEGER_MODE', None)
+        sage: default_integer_mode()
+        'auto'
+        sage: os.environ['DARMONPOINTS_INTEGER_MODE'] = 'python'
+        sage: default_integer_mode()
+        'python'
+        sage: _ = os.environ.pop('DARMONPOINTS_INTEGER_MODE')
+        sage: if old is not None: os.environ['DARMONPOINTS_INTEGER_MODE'] = old
+    '''
+    import os
+    mode = os.environ.get(INTEGER_MODE_VARIABLE, '').strip() or 'auto'
+    if mode not in INTEGER_MODES:
+        raise ValueError(f"{INTEGER_MODE_VARIABLE} = {mode!r} is not one of {INTEGER_MODES}")
+    return mode
+
+
+def _warn_python_products(reason):
+    import warnings
+    warnings.warn(f"_IntegerOperator: not using the compiled kernel darmonpoints.sparse_padic ({reason}); "
+                  "using the (much slower) python products, with the same results", RuntimeWarning, stacklevel=3)
 from .util import muted, set_immutable, speed_up_padic_inversion
 
 def evalpoly(poly, x, prec=None, check=True):
@@ -610,8 +651,19 @@ class _IntegerOperator(SageObject):
       p^(exps[c] - s), so it works with reduced copies of A, with smaller
       entries (and fewer, since many of them vanish). The result is the same
       as with 'sparse', reduced modulo p^exps[c] (and about 5 to 10 times
-      faster). This is the default for extensions of Qp when the extension
-      module is available.
+      faster).
+
+    and two automatic choices:
+
+    - 'auto' (the default, see default_integer_mode): 'dense' for Qp and
+      'compiled' for its extensions.
+
+    - 'python': the same, with 'sparse' instead of 'compiled', that is, without
+      the compiled kernel.
+
+    If the compiled kernel is not available (the extension is not compiled), or
+    if it fails, a warning is issued and the python products ('sparse') are
+    used instead.
 
     - 'banded': write each entry of A, and of v, as p^val times a smaller
       number. The rows and the columns of A are grouped in bands according
@@ -626,7 +678,7 @@ class _IntegerOperator(SageObject):
       valuations of their entries by themselves, but this way the products
       only involve their significant digits.
     '''
-    def __init__(self, A, p, exps, d, mode='auto', nbands=8, size=None):
+    def __init__(self, A, p, exps, d, mode=None, nbands=8, size=None):
         r'''
         A is either an integer matrix, a dictionary {(r, c) : A[r, c]} of
         its nonzero entries, or a pair (rows, vals) of lists indexed by the
@@ -652,6 +704,13 @@ class _IntegerOperator(SageObject):
             self.nrows, self.ncols = A.nrows(), A.ncols()
         self.p = ZZ(p)
         self.exps = list(exps)
+        if mode is None:
+            mode = default_integer_mode()
+        if mode not in INTEGER_MODES:
+            raise ValueError(f"mode must be one of {INTEGER_MODES}, not {mode!r}")
+        self.requested_mode = mode
+        if mode == 'python':
+            mode = 'dense' if d == 1 else 'sparse'
         if mode == 'auto':
             # In our tests (theta functions with series length 120 and 200),
             # FLINT was the fastest for Qp and the sparse products for all the
@@ -662,11 +721,9 @@ class _IntegerOperator(SageObject):
             # size of the entries.
             # The compiled kernel is 5 to 10 times faster than the sparse
             # products with python integers.
-            mode = 'dense' if d == 1 else ('compiled' if SparsePadicMatrix is not None else 'sparse')
+            mode = 'dense' if d == 1 else 'compiled'
         if mode == 'compiled' and SparsePadicMatrix is None:
-            import warnings
-            warnings.warn("_IntegerOperator: the extension darmonpoints.sparse_padic is not compiled, "
-                          "using the (much slower) python products", RuntimeWarning)
+            _warn_python_products("the extension is not compiled")
             mode = 'sparse'
         self.mode = mode
         self.sparse = (mode in ('sparse', 'compiled'))
@@ -680,10 +737,16 @@ class _IntegerOperator(SageObject):
                     vals[c].append(int(a))
                 self._columns = (rows, vals)
             if mode == 'compiled':
-                self._kernel = SparsePadicMatrix(*self._columns, self.nrows, self.exps, self.p)
-                # The kernel has its own copy of the entries (more compact)
-                self._columns = None
-            else:
+                try:
+                    self._kernel = SparsePadicMatrix(*self._columns, self.nrows, self.exps, self.p)
+                except Exception as e:
+                    _warn_python_products(f"{type(e).__name__}: {e}")
+                    self.mode = mode = 'sparse'
+                    self.sparse = True
+                else:
+                    # The kernel has its own copy of the entries (more compact)
+                    self._columns = None
+            if mode == 'sparse':
                 self.cols = list(zip(*self._columns))
         elif mode == 'banded':
             self._init_bands(nbands)
@@ -754,10 +817,23 @@ class _IntegerOperator(SageObject):
                        {(i, j) : (ZZ(entries[r, c]) // pmu) % mod for i, j, r, c, _ in ents})
             self.blocks.append((k, l, mu, M, B))
 
+    def _use_python_products(self, reason):
+        r'''
+        Switch from the compiled kernel to the python products (mode 'sparse').
+        '''
+        _warn_python_products(reason)
+        self._columns = self._kernel.columns()
+        self._kernel = None
+        self.cols = list(zip(*self._columns))
+        self.mode = 'sparse'
+
     def apply(self, v):
         if self.mode == 'compiled':
-            # (already reduced modulo p^exps[c])
-            return self._kernel.apply(v)
+            try:
+                # (already reduced modulo p^exps[c])
+                return self._kernel.apply(v)
+            except Exception as e:
+                self._use_python_products(f"{type(e).__name__}: {e}")
         if self.mode == 'sparse':
             return [sum([v[r] * a for r, a in zip(rows, vals)]) for rows, vals in self.cols]
         if self.mode == 'dense':
@@ -1209,7 +1285,9 @@ class LogSeriesOperator(SageObject):
       _integral_moebius_coefficients)
 
     - ``mode`` -- how to compute the products with integer matrices (see
-      _IntegerOperator)
+      _IntegerOperator); by default, default_integer_mode(): the compiled
+      kernel, unless the environment variable DARMONPOINTS_INTEGER_MODE is
+      'python'
 
     TESTS::
 
@@ -1234,8 +1312,26 @@ class LogSeriesOperator(SageObject):
         True
         sage: G1 == 3 * (g * (h * f1))
         True
+
+    The python products give the same results as the compiled kernel, also
+    when the kernel is dropped in the middle of a computation::
+
+        sage: op_py = LogSeriesOperator(K, P, 2, terms, mode='python')
+        sage: op._operator.mode, op_py._operator.mode
+        ('compiled', 'sparse')
+        sage: w = op.reduce(op.apply(v)); w == op_py.reduce(op_py.apply(v))
+        True
+        sage: (op.propagate(op.initial_precisions(elts), v) == op_py.propagate(op_py.initial_precisions(elts), v)).all()
+        True
+        sage: op._operator._use_python_products('test')
+        doctest:warning...
+        RuntimeWarning: _IntegerOperator: not using the compiled kernel darmonpoints.sparse_padic (test); using the (much slower) python products, with the same results
+        sage: op._operator.mode
+        'sparse'
+        sage: op.reduce(op.apply(w)) == op_py.reduce(op_py.apply(w))
+        True
     '''
-    def __init__(self, K, P, n, terms, mode='auto'):
+    def __init__(self, K, P, n, terms, mode=None):
         O = _ok_coordinates(K)
         self.K = K
         self.O = O
@@ -1438,7 +1534,7 @@ class LogSeriesOperator(SageObject):
         src, dst, Mval, Mprec, targets, starts = self._tracker.arrays
         vals = np.array(O.element_valuations(w, N), dtype=np.int64)
         ans = np.full(len(precs), int(N), dtype=np.int64)
-        if len(src) and propagate_precisions is not None:
+        if len(src) and propagate_precisions is not None and self._operator.mode == 'compiled':
             propagate_precisions(src, Mval, Mprec, targets, starts,
                                  np.ascontiguousarray(precs, dtype=np.int64), vals, ans)
         elif len(src):

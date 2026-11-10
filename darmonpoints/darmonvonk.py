@@ -21,6 +21,7 @@ from darmonpoints.meromorphic import (
     _moved_points,
     _parameter_points,
     _power_sums,
+    default_integer_mode,
     exp_small,
 )
 from darmonpoints.sarithgroup import *
@@ -62,10 +63,20 @@ class OverconvergentDVCocycle(SageObject):
     If ``additive`` is False, use the multiplicative implementation
     (MeromorphicFunctions). If it is None (the default), use the additive
     implementation when possible.
+
+    The products with integer matrices of the additive implementation use a
+    compiled kernel (darmonpoints.sparse_padic) by default. ``integer_mode``
+    selects how they are computed (see _IntegerOperator): ``'python'`` for the
+    pure python products (same results, much slower), for example if the
+    compiled part breaks. The default (None) is the value of the environment
+    variable DARMONPOINTS_INTEGER_MODE, or ``'auto'`` (the compiled kernel).
     """
 
-    def __init__(self, G, phi0, base_ring=None, additive=None):
+    def __init__(self, G, phi0, base_ring=None, additive=None, integer_mode=None):
         self.G = G
+        # How to compute the products with integer matrices (see
+        # _IntegerOperator); None: default_integer_mode()
+        self.integer_mode = integer_mode
         self.phi0 = phi0
         HDiv = phi0.parent()
         Div = HDiv.coefficient_module()
@@ -154,14 +165,15 @@ class OverconvergentDVCocycle(SageObject):
         K = Mer.base_ring()
         P = Mer.series_length()
         n = len(self.phi1.values())
+        mode = self.integer_mode or default_integer_mode()
         cache = _up_operator_cache(GGp)
-        key = (Up_reps, K, P, n)
+        key = (Up_reps, K, P, n, mode)
         try:
             return cache[key]
         except KeyError:
             pass
         terms = _up_operator_terms(GGp, Up_reps, Up_data, K)
-        op = LogSeriesOperator(K, P, n, terms)
+        op = LogSeriesOperator(K, P, n, terms, mode=mode)
         del terms
         cache[key] = op
         return op

@@ -128,7 +128,7 @@ class ThetaOCAdditive(SageObject):
         else:
             self.Fnlist = [copy(self.F2)]
         # How to compute the products with integer matrices (see _IntegerOperator)
-        self._integral_mode = kwargs.get('integral_mode', 'auto')
+        self._integral_mode = kwargs.get('integral_mode', None)  # None: default_integer_mode()
         # Last term of the list implementation (None means Fnlist[-1]). Since
         # improve collapses Fnlist into its sum, it is needed to continue the
         # iteration in a later call to improve.
