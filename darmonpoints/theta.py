@@ -186,30 +186,65 @@ class ThetaOC(SageObject):
             self.Fnlist = [{i : self.MM(initial_F[i], tau) for (i, _), tau in zip(gens_ext, params)}]
         else:
             self.Fnlist = [deepcopy(self.F2)]
+        # Last term of the list implementation (None means Fnlist[-1]). Since
+        # improve collapses Fnlist into its sum, it is needed to continue the
+        # iteration in a later call to improve.
+        self._last_term = None
 
-    def improve(self, m, **kwargs):
+    def _get_action_data(self):
+        # The action data only depends on the group and on the parameters, which
+        # are fixed for the lifetime of self, so compute it only once. We do not
+        # use the cache of get_action_data, since looking it up hashes p-adic
+        # matrices (which is slow) and it keeps all the matrices alive.
+        try:
+            return self._action_data
+        except AttributeError:
+            pass
         gens_ext = self.G.gens_extended()
         params = self.G.parameters
-        # Initialize action_data
         verbose("Initializing action_data", level=2)
         action_data = {}
         for (i, gi), tau in zip(gens_ext, params):
             for j, Fj in self.Fnlist[-1].items():
                 if i != -j:
                     action_data[i, j] = (
-                        self.MM.get_action_data(gi, Fj._parameter, tau),
+                        self.MM.compute_action_data(gi, Fj._parameter, tau),
                         tau,
                     )
         verbose("action_data initialized", level=2)
+        self._action_data = action_data
+        return action_data
+
+    def improve(self, m, **kwargs):
+        r'''
+        Perform (at most) m improvement steps.
+
+        If ``tol`` is given, stop as soon as the last step changed the
+        approximation by something of valuation at least ``tol``, or when the
+        size of the change has not decreased for two steps in a row (which
+        means that the working precision has been reached). The valuation of
+        the last change is stored in ``self.last_change``.
+        '''
+        gens_ext = self.G.gens_extended()
+        params = self.G.parameters
         implementation = kwargs.get('implementation', 'list')
+        tol = kwargs.get('tol', None)
         if implementation not in ['list', 'fixedpoint']:
             raise ValueError("implementation must be 'list' or 'fixedpoint'")
+        action_data = self._get_action_data()
+        self.last_change = None
+        best = None
+        stalled = 0
+        if implementation == 'list' and self._last_term is not None:
+            source = self._last_term
+        else:
+            source = self.Fnlist[-1]
 
         for _ in range(m):
-            # Compute the next term from the last on in Fnlist            
+            # Compute the next term from the last one
             tmp = {}
             for (i, gi), tau in zip(gens_ext, params):
-                for j, Fj in self.Fnlist[-1].items():
+                for j, Fj in source.items():
                     if i != -j:
                         vl = Fj.fast_act(action_data[i, j])
                         # vl = Fj.left_act_by_matrix(gi, tau)
@@ -221,12 +256,34 @@ class ThetaOC(SageObject):
             if implementation == 'list':
                 # Append the new term
                 self.Fnlist.append(tmp)
+                source = tmp
+                if tol is not None:
+                    # The new term is multiplicative, so its size is that of tmp - 1
+                    change = min(min([(o - 1).valuation() for o in F._value[:1]]
+                                     + [o.valuation() for o in F._value[1:]])
+                                 for F in tmp.values())
             else:
                 # Add the new term to F2:
                 verbose("Adding new term to F2", level=2)
-                self.Fnlist = [{i : tmp[i] + self.F2[i] for i in tmp}]
+                new = {i : tmp[i] + self.F2[i] for i in tmp}
+                if tol is not None:
+                    old = self.Fnlist[-1]
+                    change = min(min((a - b).valuation() for a, b in zip(new[i]._value, old[i]._value))
+                                 for i in new)
+                self.Fnlist = [new]
+                source = new
                 verbose('F2 updated', level=2)
-        
+            if tol is not None:
+                if best is None or change > best:
+                    best = change
+                    stalled = 0
+                else:
+                    stalled += 1
+                self.last_change = change
+                if change >= tol or stalled >= 2:
+                    break
+
+        self._last_term = source if implementation == 'list' else None
         # Collapse the list to one term and return
         if len(self.Fnlist) > 1:
             self.Fnlist = [
@@ -301,7 +358,7 @@ class ThetaOC(SageObject):
             sage: G = SchottkyGroup(K, (h1,h2))
             sage: theta = G.theta(10, 7, 9)
             sage: theta.eval_derivative(13)
-            2*3 + 3^2 + 2*3^6 + 3^7 + O(3^9)
+            2*3 + 3^2 + 3^5 + 3^6 + 2*3^7 + 2*3^8 + O(3^9)
 
         '''
         dlog = self.eval_dlog(z)

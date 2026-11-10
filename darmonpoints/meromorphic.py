@@ -39,7 +39,7 @@ from sage.structure.unique_representation import (
 from itertools import islice
 
 from .divisors import Divisors
-from .util import muted, set_immutable
+from .util import muted, set_immutable, speed_up_padic_inversion
 
 def evalpoly(poly, x, prec=None, check=True):
     if prec is None:
@@ -47,11 +47,18 @@ def evalpoly(poly, x, prec=None, check=True):
     # Initialize result
     if len(poly) == 0:
         return 0
-    K = (poly[0].parent()(1) * x.parent()(1)).parent()
-    x = K(x)
     # Keep the low-degree terms t^0, ..., t^{prec-1} (matches the semantics
     # of the old call site `evalpoly(self._value[:prec], ...)`).
-    poly = [K(a) for a in poly[:prec]]
+    poly = poly[:prec]
+    K = x.parent()
+    P0 = poly[0].parent()
+    if P0 is not K:
+        K = (P0(1) * K(1)).parent()
+        x = K(x)
+    # Coercing coefficients that already lie in K is not free (it goes through
+    # the generic element constructor) and dominated the cost of evaluation.
+    if P0 is not K or any(a.parent() is not K for a in poly):
+        poly = [K(a) for a in poly]
     if check:
         assert x.valuation() >= 0
     # Evaluate value of polynomial using Horner's method:
@@ -149,7 +156,7 @@ class MeromorphicFunctionsElement(ModuleElement):
         if return_value:
             val = evalpoly(self._value, phiD)
         
-        valder = self.power_series().derivative().list()
+        valder = self._derivative_coeffs()
         chainrule = (a * d - b * c) / (c * D + d) ** 2
         ans = (
             evalpoly(valder, phiD)
@@ -160,6 +167,14 @@ class MeromorphicFunctionsElement(ModuleElement):
         else:
             return ans
 
+    @cached_method
+    def _derivative_coeffs(self):
+        return self.power_series().derivative().list()
+
+    @cached_method
+    def _dlog_coeffs(self):
+        return self.power_series().log().derivative().list()
+
     def eval_dlog(self, D):
         K = self.parent().base_ring()
         if type(D) in (int, Integer):
@@ -168,8 +183,10 @@ class MeromorphicFunctionsElement(ModuleElement):
             raise NotImplementedError
         a, b, c, d = self._parameter.list()
         phi = lambda Q: a / c if Q == Infinity else (a * Q + b) / (c * Q + d)
-        phiD = phi(D)        
-        valder = self.power_series().log().derivative().list()
+        phiD = phi(D)
+        # The coefficients of (log F)' do not depend on D: computing them (a power
+        # series logarithm) dominated the cost of each call, so cache them.
+        valder = self._dlog_coeffs()
         chainrule = (a * d - b * c) / (c * D + d) ** 2
         return chainrule * evalpoly(valder, phiD)
 
@@ -248,10 +265,11 @@ class MeromorphicFunctionsElement(ModuleElement):
             a, b, c, d = (self._parameter * (tg * g).adjugate()).list()
             zz = (
                 (parent._Ps([b, a]) / parent._Ps([d, c]))
-                .map_coefficients(lambda x: x.add_bigoh(prec+1))
                 .truncate(prec)
+                .map_coefficients(lambda x: x.add_bigoh(prec+1))
+                
             )
-            return evalpoly(self._value, zz)            
+            return self.__class__(parent, evalpoly(self._value, zz), param, check=False)
 
 
 def divisor_to_pseries(parameter, Ps, data, prec):
@@ -286,6 +304,7 @@ class MeromorphicFunctions(Parent, UniqueRepresentation):
 
     def __init__(self, K, p, prec):
         Parent.__init__(self)
+        speed_up_padic_inversion(K)
         if prec is None:
             self._prec = K.precision_cap()
         else:
@@ -301,7 +320,6 @@ class MeromorphicFunctions(Parent, UniqueRepresentation):
         return self._p
 
     @cached_method
-    @muted
     def get_action_data(self, g, oldparam, param, prec=None):
         r'''
         Act on the power series by matrix g, given the old and new parameters.
@@ -309,6 +327,15 @@ class MeromorphicFunctions(Parent, UniqueRepresentation):
         (g * phi)(t) = phi(tau_0 g^-1 * tau_1^-1 t)
         which amounts to acting on the left by
         tau_1 g tau_0^-1
+        '''
+        return self.compute_action_data(g, oldparam, param, prec)
+
+    @muted
+    def compute_action_data(self, g, oldparam, param, prec=None):
+        r'''
+        Uncached version of get_action_data. Looking up the cache of
+        get_action_data needs hashing p-adic matrices, which is slow, so
+        callers that do their own caching should use this one.
         '''
         K = self.base_ring()
         if prec is None:
@@ -320,23 +347,67 @@ class MeromorphicFunctions(Parent, UniqueRepresentation):
 
         # abcd = tau_0 g^-1 * tau_1^-1
         a, b, c, d = (oldparam * (tg * g).adjugate()).list()
+        if not d.is_zero() and (c / d).valuation() >= 0:
+            return self._action_matrix_moebius(a, b, c, d, prec)
         zz = (
             (self._Ps([b, a]) / self._Ps([d, c]))
-            .map_coefficients(lambda x: x.add_bigoh(prec+1))
             .truncate(prec)
+            .map_coefficients(lambda x: x.add_bigoh(prec+1))
         ) # zz = (at + b)/(ct + d)
         ans = [zz.parent()(1), zz]
-        while len(ans) < prec:  # DEBUG - was prec + 1
+        while len(ans) < prec:
             zz_ps = (
                 (zz * ans[-1])
+                .truncate(prec)
                 .map_coefficients(lambda x: x.add_bigoh(prec+1))
-                .truncate(prec)  # DEBUG - was prec + 1
             )
             ans.append(zz_ps)
         m = Matrix(K, prec, prec, 0)
         for i, zz_ps in enumerate(ans):
             for j, aij in enumerate(zz_ps):
                 m[i, j] = aij  # i, j entry contains j-th term of zz^i
+        return m
+
+    def _action_matrix_moebius(self, a, b, c, d, prec):
+        r'''
+        Same matrix as in get_action_data (row i contains the coefficients of
+        zz^i, where zz = (at + b)/(ct + d)), computed using that
+        zz^i = zz^(i-1) * (b1 + a1 t) / (1 + c1 t). This only needs O(prec)
+        operations per row instead of a product of power series.
+
+        Assumes that c/d has nonnegative valuation, so that the division by
+        1 + c1 t does not lose precision.
+        '''
+        K = self.base_ring()
+        dinv = ~d
+        a1, b1, c1 = a * dinv, b * dinv, c * dinv
+        bound = prec + 1
+        zero = K(0)
+        m = Matrix(K, prec, prec, 0)
+        m[0, 0] = 1
+        w = [K(1)] + [zero] * (prec - 1)
+        for i in range(1, prec):
+            u = []
+            prev_w = zero
+            prev_u = zero
+            for k in range(prec):
+                wk = w[k]
+                uk = b1 * wk + a1 * prev_w - c1 * prev_u
+                if not uk._is_exact_zero():
+                    uk = uk.add_bigoh(bound)
+                prev_w = wk
+                prev_u = uk
+                u.append(uk)
+            # Like the coefficients of a polynomial, drop the trailing zeros
+            # (they are left as exact zeros in the matrix)
+            n = prec
+            while n > 0 and u[n - 1].is_zero():
+                n -= 1
+            if n == 0:
+                break # All the remaining powers vanish
+            for j in range(n):
+                m[i, j] = u[j]
+            w = u
         return m
 
     def base_ring(self):
