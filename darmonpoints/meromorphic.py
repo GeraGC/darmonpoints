@@ -38,6 +38,7 @@ from sage.structure.unique_representation import (
     CachedRepresentation,
     UniqueRepresentation,
 )
+from array import array
 from itertools import islice
 
 from .divisors import Divisors, DivisorsElement
@@ -613,16 +614,26 @@ class _IntegerOperator(SageObject):
     '''
     def __init__(self, A, p, exps, d, mode='auto', nbands=8, size=None):
         r'''
-        A is either an integer matrix or a dictionary {(r, c) : A[r, c]} of
-        its nonzero entries, in which case size = (number of rows, number of
+        A is either an integer matrix, a dictionary {(r, c) : A[r, c]} of
+        its nonzero entries, or a pair (rows, vals) of lists indexed by the
+        columns, where rows[c] (an array of integers) and vals[c] (a list of
+        python integers) are the rows and the values of the nonzero entries
+        of column c. In the last two cases size = (number of rows, number of
         columns).
+
+        The pair of lists is the most compact form (and the one used for the
+        sparse products), so that large operators should be given that way.
         '''
+        self._entries = None
+        self._matrix = None
+        self._columns = None
         if isinstance(A, dict):
             self._entries = A
-            self._matrix = None
+            self.nrows, self.ncols = size
+        elif isinstance(A, tuple):
+            self._columns = A
             self.nrows, self.ncols = size
         else:
-            self._entries = None
             self._matrix = A
             self.nrows, self.ncols = A.nrows(), A.ncols()
         self.p = ZZ(p)
@@ -639,24 +650,39 @@ class _IntegerOperator(SageObject):
         self.mode = mode
         self.sparse = (mode == 'sparse')
         if mode == 'sparse':
-            cols = [([], []) for _ in range(self.ncols)]
-            for (r, c), a in sorted(self.entries.items(), key=lambda o : o[0][::-1]):
-                cols[c][0].append(r)
-                cols[c][1].append(int(a))
-            self.cols = cols
+            if self._columns is None:
+                rows = [array('i') for _ in range(self.ncols)]
+                vals = [[] for _ in range(self.ncols)]
+                for (r, c), a in self.entries.items():
+                    rows[c].append(r)
+                    vals[c].append(int(a))
+                self._columns = (rows, vals)
+            self.cols = list(zip(*self._columns))
         elif mode == 'banded':
             self._init_bands(nbands)
+
+    def nnz(self):
+        r'''
+        The number of nonzero entries.
+        '''
+        if self._columns is not None:
+            return sum(len(o) for o in self._columns[1])
+        return len(self.entries)
 
     @lazy_attribute
     def entries(self):
         if self._entries is None:
-            self._entries = self._matrix.dict()
+            if self._matrix is not None:
+                self._entries = self._matrix.dict()
+            else:
+                rows, vals = self._columns
+                self._entries = {(r, c) : a for c in range(self.ncols) for r, a in zip(rows[c], vals[c])}
         return self._entries
 
     @lazy_attribute
     def A(self):
         if self._matrix is None:
-            self._matrix = matrix(ZZ, self.nrows, self.ncols, self._entries)
+            self._matrix = matrix(ZZ, self.nrows, self.ncols, self.entries)
         return self._matrix
 
     def _init_bands(self, nbands):
@@ -741,42 +767,48 @@ class _IntegerOperator(SageObject):
 class _PrecisionTracker(SageObject):
     r'''
     The data needed to keep track of the precision of the coefficients in
-    _improve_integral: the nonzero entries of the action matrices, with their
-    valuations and precisions. They are only computed when needed (when some
-    input is not known to the full precision).
+    _improve_integral: the positions of the nonzero entries of the action
+    matrices (as matrices over K), with their valuations and precisions.
+
+    They are given as a list of chunks (rows, columns, valuations,
+    precisions) of numpy arrays, which are only put together (sorted by
+    column, see propagate) when needed: when some input is not known to the
+    full precision.
     '''
-    def __init__(self, blocks, O, N, min_input_prec):
-        # blocks: list of (row offset, column offset, {(r, c) : entry}, precision),
-        # where the entries are integers (d = 1) or lists of coordinates
-        self._blocks = blocks
-        self._O = O
+    def __init__(self, chunks, N, min_input_prec):
+        self._chunks = chunks
         self._N = int(N)
         self.min_input_prec = int(min(min_input_prec, N))
+
+    @staticmethod
+    def chunk(r0, c0, positions, valuations, prec):
+        r'''
+        The chunk of the nonzero entries of a block of the action matrix,
+        with offsets (r0, c0): positions is the list of their (row, column)
+        in the block, and valuations the list of their valuations. Returns
+        None if there are no entries.
+        '''
+        import numpy as np
+        if not positions:
+            return None
+        pos = np.array(positions, dtype=np.int32).reshape(-1, 2)
+        return (pos[:, 0] + np.int32(r0), pos[:, 1] + np.int32(c0),
+                np.array(valuations, dtype=np.int32), np.full(len(pos), int(prec), dtype=np.int32))
 
     @lazy_attribute
     def arrays(self):
         import numpy as np
-        O, N = self._O, self._N
-        p, e = O.p, int(O.e)
-        src, dst, vals, precs = [], [], [], []
-        for r0, c0, entries, prec in self._blocks:
-            if not entries:
-                continue
-            positions = np.array(list(entries.keys()), dtype=np.int64)
-            src.append(positions[:, 0] + r0)
-            dst.append(positions[:, 1] + c0)
-            if O.d == 1:
-                vals.append(np.array([e * int(ZZ(x).valuation(p)) for x in entries.values()], dtype=np.int64))
-            else:
-                vals.append(np.array(O.element_valuations([c for u in entries.values() for c in u], N), dtype=np.int64))
-            precs.append(np.full(len(entries), int(prec), dtype=np.int64))
-        if not src:
-            empty = np.zeros(0, dtype=np.int64)
+        chunks = [o for o in self._chunks if o is not None]
+        self._chunks = None
+        if not chunks:
+            empty = np.zeros(0, dtype=np.int32)
             return empty, empty, empty, empty, empty, empty
-        src, dst, vals, precs = [np.concatenate(o) for o in (src, dst, vals, precs)]
+        src, dst, vals, precs = [np.concatenate(o) for o in zip(*chunks)]
+        del chunks
         # Sort by target, for np.minimum.reduceat
         order = np.argsort(dst, kind='stable')
         src, dst, vals, precs = src[order], dst[order], vals[order], precs[order]
+        del order
         targets, starts = np.unique(dst, return_index=True)
         return src, dst, vals, precs, targets, starts
 
@@ -1202,11 +1234,13 @@ class LogSeriesOperator(SageObject):
                     grouped[k] = [int(m), coeffs]
             blocks[ji] = [(m, k, coeffs) for k, (m, coeffs) in grouped.items() if m]
         cache = {}
-        # For the precision tracking: the nonzero entries of the action
-        # matrices, as (row offset, column offset, entries, precision) for each block
+        # For the precision tracking: the positions of the nonzero entries of
+        # the action matrices, with their valuations and precisions (see
+        # _PrecisionTracker.chunk)
         track = []
         if d == 1:
             pN = mods[0]
+            p, e = O.p, int(O.e)
             A = matrix(ZZ, n * P, n * P)
             for (j, i), lst in blocks.items():
                 M = matrix(ZZ, P, P)
@@ -1220,18 +1254,31 @@ class LogSeriesOperator(SageObject):
                 M = matrix(ZZ, P, P, {rc : o % pN for rc, o in M.dict().items()})
                 # The normalization (value 0 at t = 0) is linear: kill column 0
                 M.set_column(0, [0] * P)
-                track.append((j * P, i * P, M.dict(), moebius_prec[j, i]))
+                Md = M.dict()
+                track.append(_PrecisionTracker.chunk(j * P, i * P, list(Md), [e * int(ZZ(x).valuation(p)) for x in Md.values()],
+                                                     moebius_prec[j, i]))
+                del Md
                 # As row vectors: G_i = sum_j F_j * M_ji
                 A.set_block(j * P, i * P, M)
         else:
-            # The multiplication by x is the integer matrix sum_b x_b R[b]. Compute
-            # all of them at once: rows of X are coordinates, and the rows of
-            # Rflat the matrices R[b], flattened.
+            # The multiplication by x is the integer matrix sum_b x_b R[b]. For
+            # each block, compute all of them at once: rows of X are
+            # coordinates, and the rows of Rflat the matrices R[b], flattened.
             Rflat = matrix(ZZ, [Rb.list() for Rb in O.R])
             mult = lambda y : _reduce_columns(sum((ZZ(c) * Rb for c, Rb in zip(O.coords(y), O.R)), matrix(ZZ, d, d)), mods)
             imods = [int(o) for o in mods]
-            positions = []
-            X = []
+            # The integer matrix is built directly by columns (see
+            # _IntegerOperator), one block at a time, since a dictionary of
+            # its entries (or even the list of them) takes many times more
+            # memory. The entries of the action matrix of each Mobius
+            # transformation are discarded after the last block that uses it.
+            uses = {}
+            for lst in blocks.values():
+                for _, k, _ in lst:
+                    uses[k] = uses.get(k, 0) + 1
+            ncols = n * P * d
+            col_rows = [array('i') for _ in range(ncols)]
+            col_vals = [[] for _ in range(ncols)]
             for (j, i), lst in blocks.items():
                 block_entries = {}
                 for m, k, coeffs in lst:
@@ -1249,26 +1296,38 @@ class LogSeriesOperator(SageObject):
                             block_entries[r, c] = [(m * x) % md for x, md in zip(u, imods)]
                         else:
                             block_entries[r, c] = [(x + m * y) % md for x, y, md in zip(old, u, imods)]
-                block_entries = {rc : u for rc, u in block_entries.items() if any(u)}
-                for (r, c), u in block_entries.items():
-                    # As row vectors: G_i = sum_j F_j * M_ji
-                    positions.append(((j * P + r) * d, (i * P + c) * d))
-                    X.append(u)
-                track.append((j * P, i * P, block_entries, moebius_prec[j, i]))
-            Y = (matrix(ZZ, len(X), d, X) * Rflat).list() if X else []
-            entries_A = {}
-            k = 0
-            for row, col in positions:
-                for b1 in range(d):
-                    for b2 in range(d):
-                        val = Y[k] % mods[b2]
-                        k += 1
-                        if val:
-                            entries_A[row + b1, col + b2] = val
-            A = entries_A
+                    uses[k] -= 1
+                    if not uses[k]:
+                        del cache[k]
+                    del entries
+                positions = [rc for rc, u in block_entries.items() if any(u)]
+                X = [block_entries[rc] for rc in positions]
+                del block_entries
+                if not X:
+                    continue
+                track.append(_PrecisionTracker.chunk(j * P, i * P, positions, O.element_valuations([c for u in X for c in u], N),
+                                                     moebius_prec[j, i]))
+                Y = (matrix(ZZ, len(X), d, X) * Rflat).list()
+                del X
+                # As row vectors: G_i = sum_j F_j * M_ji. The entry (r, c) of
+                # M_ji is the d x d block of rows (jP + r)d + b1 and columns
+                # (iP + c)d + b2.
+                pos = 0
+                for r, c in positions:
+                    row = (j * P + r) * d
+                    col = (i * P + c) * d
+                    for b1 in range(d):
+                        for b2 in range(d):
+                            val = int(Y[pos]) % imods[b2]
+                            pos += 1
+                            if val:
+                                col_rows[col + b2].append(row + b1)
+                                col_vals[col + b2].append(val)
+                del Y, positions
+            A = (col_rows, col_vals)
         exps = [ZZ(md).valuation(O.p) if md > 1 else 0 for md in mods] * (n * P)
         self._operator = _IntegerOperator(A, O.p, exps, d, mode=mode, size=(n * P * d, n * P * d))
-        self._tracker = _PrecisionTracker(track, O, N, min(list(moebius_prec.values()) + [N]))
+        self._tracker = _PrecisionTracker(track, N, min(list(moebius_prec.values()) + [N]))
         # The smallest precision of the action matrices (at most P): if the
         # inputs are known modulo pi^P and this is P, so are the outputs, and
         # there is no need to track the precision.
@@ -1375,6 +1434,140 @@ def _log_series_length(prec, p, e):
     while length * lnp < e or length - e * float(_log(length)) / lnp < prec:
         length += 1
     return length
+
+
+def _parameter_points(parameter, D):
+    r'''
+    The pairs (t, n), where t = phi(Q) for the points Q of the divisor D
+    with multiplicity n (or the point D, with n = 1), and phi is the Mobius
+    transformation of the parameter (see LogSeries.evaluate). None if some t
+    is not integral (then the evaluation fails as LogSeries.evaluate does).
+    '''
+    a, b, c, d = parameter.list()
+    terms = list(D) if isinstance(D, DivisorsElement) else [(D, 1)]
+    ans = []
+    for Q, n in terms:
+        t = a / c if Q == Infinity else (a * Q + b) / (c * Q + d)
+        if t.valuation() < 0:
+            return None
+        ans.append((t, n))
+    return ans
+
+
+def _moved_points(parameter, g, points):
+    r'''
+    For the action of the matrix g on log-series with the given parameter:
+    the pairs (x, n) such that (g * F)(D) = sum n * (log F)(x), where points
+    are the pairs (t, n) of D (see _parameter_points), or None if this
+    formula cannot be used.
+
+    The series of g * F is (log F)(zz(t)) - (log F)(zz(0)), where zz is the
+    Mobius transformation of oldparam * (param * g).adjugate() (see
+    MeromorphicFunctions.compute_action_data and LogSeries.act). So each
+    pair (t, n) contributes (zz(t), n), and the degree of D times
+    (zz(0), -1).
+
+    The formula is used when zz = (b1 + a1 t) / (1 + c1 t) has c1 integral
+    (as for the matrices of the action), and the points x are integral and
+    computed without loss of precision (1 + c1 t is a unit). Otherwise, the
+    series of g * F should be computed, as before.
+    '''
+    a, b, c, d = (parameter * (parameter * g).adjugate()).list()
+    if d.is_zero():
+        return None
+    dinv = ~d
+    a1, b1, c1 = a * dinv, b * dinv, c * dinv
+    if c1.valuation() < 0:
+        return None
+    ans = []
+    deg = 0
+    for t, n in points:
+        den = 1 + c1 * t
+        if den.valuation() != 0:
+            return None
+        x = (b1 + a1 * t) / den
+        if x.valuation() < 0:
+            return None
+        ans.append((x, n))
+        deg += n
+    if deg != 0:
+        if b1.valuation() < 0:
+            return None
+        ans.append((b1, -deg))
+    return ans
+
+
+def _power_sums(points, P, K):
+    r'''
+    The vector (sum n x^i for 0 <= i < P) over K, for the pairs (x, n) in
+    points. Its product with the vector of coefficients of a log-series F
+    is the sum of the n * F(x).
+    '''
+    ans = [K(0)] * P
+    for x, n in points:
+        y = K(n)
+        ans[0] += y
+        for i in range(1, P):
+            y *= x
+            ans[i] += y
+    return vector(K, ans)
+
+
+def evaluate_acted(functions, g, D):
+    r'''
+    The list of the values (g * F)(D) (as F.evaluate, that is, logarithms of
+    the values of the multiplicative functions) for the elements F of
+    AdditiveMeromorphicFunctions in the list functions, where g is a 2 x 2
+    matrix (or None, for the identity) and D is a point or a divisor.
+
+    The series of g * F is not computed (which needs the product of a vector
+    and a matrix over K of size the length P of the series): instead, the
+    power sums of the images of the points of D (see _moved_points) are
+    computed, once for all the F with the same parameter, at a cost of about
+    P operations for each point. So this is faster than computing the series
+    when D has less than about P points (see
+    OverconvergentDVCocycle._log_evaluate_at_cycle).
+
+    EXAMPLES::
+
+        sage: from darmonpoints.meromorphic import AdditiveMeromorphicFunctions, evaluate_acted
+        sage: from darmonpoints.divisors import Divisors
+        sage: K.<a> = Qq(25, 20)
+        sage: A = AdditiveMeromorphicFunctions(K, 5, 20)
+        sage: Div = Divisors(K)
+        sage: f0 = A(Div([(1, a/5), (-1, (a + 1)/5)]))
+        sage: f1 = A(Div([(1, 1/(5*a)), (-1, (a + 2)/25)]))
+        sage: g = matrix(K, 2, 2, [1, a, 5, 3])
+        sage: D = Div([(1, a + 1), (-1, 2*a), (1, 5*a), (-1, 3)])
+        sage: [(g * f)(D) for f in [f0, f1]] == evaluate_acted([f0, f1], g, D)
+        True
+        sage: E = Div([(1, a + 1), (2, 5)])
+        sage: [(g * f)(E) for f in [f0, f1]] == evaluate_acted([f0, f1], g, E)
+        True
+        sage: [f(E) for f in [f0, f1]] == evaluate_acted([f0, f1], None, E)
+        True
+    '''
+    ans = [None] * len(functions)
+    by_parameter = {}
+    for i, F in enumerate(functions):
+        by_parameter.setdefault(id(F._parameter), []).append(i)
+    for indices in by_parameter.values():
+        F0 = functions[indices[0]]
+        parameter = F0._parameter
+        K = F0._value.base_ring()
+        points = _parameter_points(parameter, D)
+        if points is not None and g is not None:
+            points = _moved_points(parameter, g, points)
+        for i in indices:
+            F = functions[i]
+            if points is None:
+                ans[i] = (F if g is None else F.left_act_by_matrix(g)).evaluate(D)
+        if points is None:
+            continue
+        W = _power_sums(points, len(F0._value), K)
+        for i in indices:
+            ans[i] = functions[i]._value * W
+    return ans
 
 
 class AdditiveMeromorphicFunctionsElement(ModuleElement):

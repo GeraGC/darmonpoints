@@ -1,3 +1,6 @@
+import traceback
+import warnings
+import weakref
 from itertools import product
 
 from sage.arith.misc import fundamental_discriminant
@@ -6,6 +9,7 @@ from sage.modular.pollack_stevens.manin_map import *
 
 from darmonpoints.arithgroup import angle_sign, intersect_geodesic_arcs
 from darmonpoints.cohomology_arithmetic import ArithAction, CohArbitrary
+from darmonpoints.divisors import DivisorsElement
 from darmonpoints.homology import *
 # from darmonpoints.ocmodule import AddMeromorphicFunctions
 from darmonpoints.meromorphic import (
@@ -14,6 +18,9 @@ from darmonpoints.meromorphic import (
     MeromorphicFunctions,
     _check_integral,
     _integral_moebius_coefficients,
+    _moved_points,
+    _parameter_points,
+    _power_sums,
     exp_small,
 )
 from darmonpoints.sarithgroup import *
@@ -21,6 +28,26 @@ from darmonpoints.util import *
 
 # distinguished_open = "OCp"  # Needed if we want to compare with Darmon points!
 distinguished_open = 'Uinf'
+
+# The Up operators of the additive implementation (see
+# OverconvergentDVCocycle.up_operator), for each group (by id, dropped when
+# the group is garbage collected; the groups are not used as keys, since
+# hashing them is not cheap). Forked processes inherit them.
+_UP_OPERATORS = {}
+
+
+def _up_operator_cache(GGp):
+    key = id(GGp)
+    try:
+        return _UP_OPERATORS[key]
+    except KeyError:
+        pass
+    try:
+        weakref.finalize(GGp, _UP_OPERATORS.pop, key, None)
+    except TypeError:
+        return {}  # Cannot tell when the group goes away: do not cache
+    cache = _UP_OPERATORS[key] = {}
+    return cache
 
 
 class OverconvergentDVCocycle(SageObject):
@@ -85,7 +112,11 @@ class OverconvergentDVCocycle(SageObject):
     def _str_(self):
         return "Overconvergent DV cocycle for group %s" % self.G
 
-    def improve(self, prec):
+    def _up_data(self):
+        r"""
+        The representatives of Up and the data needed to apply it (see
+        CohArbitrary.apply_hecke_operator).
+        """
         G = self.G
         p = G.prime()
         GGp = G.small_group()
@@ -97,6 +128,47 @@ class OverconvergentDVCocycle(SageObject):
         else:
             Up_reps = tuple([set_immutable(o) for o in G.get_Up_reps()])
         Up_data = GGp.get_hecke_data(p, hecke_reps=Up_reps)
+        return Up_reps, Up_data
+
+    def up_operator(self, Up_reps=None, Up_data=None):
+        r"""
+        For the additive implementation, the Up operator acting on the values
+        of the cocycle at the generators, as a LogSeriesOperator.
+
+        It only depends on the group, the base ring and the length of the
+        series (and not on phi0), so it is cached: all the cocycles over the
+        same group and p-adic field (for example, those of all the embeddings
+        and all the discriminants of a computation) share it. Computing it
+        before forking several processes that lift cocycles over the same
+        group spares each of them the construction.
+
+        Raises ValueError if the Mobius transformations of the action are not
+        integral (see _integral_moebius_coefficients).
+        """
+        if not self.additive:
+            raise ValueError("Only for the additive implementation")
+        if Up_reps is None:
+            Up_reps, Up_data = self._up_data()
+        GGp = self.G.small_group()
+        Mer = self.HpMer.coefficient_module()
+        K = Mer.base_ring()
+        P = Mer.series_length()
+        n = len(self.phi1.values())
+        cache = _up_operator_cache(GGp)
+        key = (Up_reps, K, P, n)
+        try:
+            return cache[key]
+        except KeyError:
+            pass
+        terms = _up_operator_terms(GGp, Up_reps, Up_data, K)
+        op = LogSeriesOperator(K, P, n, terms)
+        del terms
+        cache[key] = op
+        return op
+
+    def improve(self, prec):
+        p = self.G.prime()
+        Up_reps, Up_data = self._up_data()
         if self.additive and self._improve_integral(prec, Up_reps, Up_data):
             return
         tmp = self.HpMer(self.phi1)
@@ -126,7 +198,6 @@ class OverconvergentDVCocycle(SageObject):
         """
         import numpy as np
 
-        GGp = self.G.small_group()
         Mer = self.HpMer.coefficient_module()
         K = Mer.base_ring()
         P = Mer.series_length()
@@ -134,10 +205,18 @@ class OverconvergentDVCocycle(SageObject):
         current = [o for f in values for o in f._value]
         try:
             _check_integral(current)
-            terms = _up_operator_terms(GGp, Up_reps, Up_data, K)
-            op = LogSeriesOperator(K, P, len(values), terms)
+            op = self.up_operator(Up_reps, Up_data)
         except (TypeError, ValueError, ArithmeticError, NotImplementedError) as e:
-            verbose("Not using integer matrices: %s" % e)
+            # The iteration below is much faster than the generic one, so say
+            # it loudly: an unexpected error here only shows up as a (much)
+            # slower computation.
+            warnings.warn(
+                "OverconvergentDVCocycle: not using integer matrices for Up (%s: %s), "
+                "falling back to the much slower iteration over K" % (type(e).__name__, e),
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            verbose(traceback.format_exc())
             return False
         # The vectors of the iteration and of the two partial sums, and the
         # precisions of their coefficients (see LogSeriesOperator.propagate)
@@ -193,6 +272,101 @@ class OverconvergentDVCocycle(SageObject):
         r"""
         For the additive implementation, the logarithms of the values of
         _evaluate_at_cycle.
+
+        The value of a cocycle at g is the sum over the letters of the word
+        of g of the terms +-(gamma * F), as in _evaluate_word_tietze_naive,
+        where gamma is a prefix of the word and F the value at a generator.
+        Only their values at D are needed, which are products of the vector
+        of coefficients of F with a vector W that does not depend on F (so
+        it is the same for phi_even and phi_odd). There are two ways of
+        computing W:
+
+        - from the matrix M of the action of gamma on the series (see
+          get_action_data, which caches them), as M * T, where T is the
+          vector of power sums of the points of D (in the coordinate of the
+          parameter): one product of a matrix and a vector of size the length
+          P of the series;
+
+        - as the vector of power sums of the images of the points of D (see
+          evaluate_acted): about P operations for each point.
+
+        The second one is used when D has at most P / 2 points (the products
+        of matrices and vectors cost between 0.6 and 1.2 times the power sums
+        of P points in our tests, and the matrices of the action are often
+        sparse), and when it can be used (see _moved_points).
+
+        Before, the series of the terms (two products of a vector and a matrix
+        for each term, for phi_even and phi_odd) were added up and evaluated
+        at the points of D.
+        """
+        K = self.K
+        G = self.HpMer.group()
+        Mer = self.HpMer.coefficient_module()
+        P = Mer.series_length()
+        even, odd = self.phi_even.values(), self.phi_odd.values()
+        parameter = even[0]._parameter
+        if any(F._parameter is not parameter for F in even + odd):
+            return self._log_evaluate_at_cycle_series(theta)
+        # As the action (ArithGroupElement._act_on_ and get_action_data)
+        to_K = lambda h: set_immutable(h.matrix().change_ring(K))
+        ans_even = K(0)
+        ans_odd = K(0)
+        for g, D in theta:
+            points = _parameter_points(parameter, D)
+            if points is None:
+                # (fails as LogSeries.evaluate)
+                e, o = self._log_evaluate_at_cycle_series([(g, D)])
+                ans_even += e
+                ans_odd += o
+                continue
+            direct = 2 * len(points) <= P
+            T = None  # The power sums of the points of D
+            T0 = None  # The same, without the constant term
+            x = g if g.parent() is G else G(g)
+            gamma = None  # the prefix of the word (None for the identity)
+            for l in x.word_rep:
+                if l > 0:
+                    j = l - 1
+                    sign = 1
+                    m = None if gamma is None else to_K(gamma)
+                    gamma = G.gen(j) if gamma is None else gamma * G.gen(j)
+                else:
+                    j = -l - 1
+                    sign = -1
+                    gi = G.gen(j) ** -1
+                    gamma = gi if gamma is None else gamma * gi
+                    m = to_K(gamma)
+                W = None
+                if m is not None and direct:
+                    moved = _moved_points(parameter, m, points)
+                    if moved is not None:
+                        W = _power_sums(moved, P, K)
+                if W is None:
+                    if T is None:
+                        T = _power_sums(points, P, K)
+                    if m is None:
+                        W = T
+                    else:
+                        # The series of gamma * F is F * M, with the
+                        # constant term set to 0
+                        if T0 is None:
+                            T0 = T.__copy__()
+                            T0[0] = 0
+                        W = Mer.get_action_data(m, parameter, parameter) * T0
+                ve = even[j]._value * W
+                vo = odd[j]._value * W
+                if sign == 1:
+                    ans_even += ve
+                    ans_odd += vo
+                else:
+                    ans_even -= ve
+                    ans_odd -= vo
+        return ans_even, ans_odd
+
+    def _log_evaluate_at_cycle_series(self, theta):
+        r"""
+        Same as _log_evaluate_at_cycle, computing the series of the values of
+        the cocycles.
         """
         ans_odd = self.K(0)
         ans_even = self.K(0)
