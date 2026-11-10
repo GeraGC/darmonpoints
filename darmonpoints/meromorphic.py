@@ -42,6 +42,11 @@ from array import array
 from itertools import islice
 
 from .divisors import Divisors, DivisorsElement
+
+try:
+    from .sparse_padic import SparsePadicMatrix, propagate_precisions
+except ImportError:  # the extension is not compiled
+    SparsePadicMatrix = propagate_precisions = None
 from .util import muted, set_immutable, speed_up_padic_inversion
 
 def evalpoly(poly, x, prec=None, check=True):
@@ -599,6 +604,15 @@ class _IntegerOperator(SageObject):
     - 'sparse': with python integers, from the nonzero entries of A (column by
       column). Much faster than Sage's products when A is sparse.
 
+    - 'compiled': the same products, computed by the compiled kernel
+      SparsePadicMatrix (module sparse_padic), with GMP. It also uses the
+      valuation of v: when p^s divides v, column c is only needed modulo
+      p^(exps[c] - s), so it works with reduced copies of A, with smaller
+      entries (and fewer, since many of them vanish). The result is the same
+      as with 'sparse', reduced modulo p^exps[c] (and about 5 to 10 times
+      faster). This is the default for extensions of Qp when the extension
+      module is available.
+
     - 'banded': write each entry of A, and of v, as p^val times a smaller
       number. The rows and the columns of A are grouped in bands according
       to the valuations of their entries, and each block (row band, column
@@ -646,10 +660,18 @@ class _IntegerOperator(SageObject):
             # still slower than the sparse ones: the cost of Sage's products of
             # integer vectors and matrices per entry depends little on the
             # size of the entries.
-            mode = 'dense' if d == 1 else 'sparse'
+            # The compiled kernel is 5 to 10 times faster than the sparse
+            # products with python integers.
+            mode = 'dense' if d == 1 else ('compiled' if SparsePadicMatrix is not None else 'sparse')
+        if mode == 'compiled' and SparsePadicMatrix is None:
+            import warnings
+            warnings.warn("_IntegerOperator: the extension darmonpoints.sparse_padic is not compiled, "
+                          "using the (much slower) python products", RuntimeWarning)
+            mode = 'sparse'
         self.mode = mode
-        self.sparse = (mode == 'sparse')
-        if mode == 'sparse':
+        self.sparse = (mode in ('sparse', 'compiled'))
+        self._kernel = None
+        if mode in ('sparse', 'compiled'):
             if self._columns is None:
                 rows = [array('i') for _ in range(self.ncols)]
                 vals = [[] for _ in range(self.ncols)]
@@ -657,7 +679,12 @@ class _IntegerOperator(SageObject):
                     rows[c].append(r)
                     vals[c].append(int(a))
                 self._columns = (rows, vals)
-            self.cols = list(zip(*self._columns))
+            if mode == 'compiled':
+                self._kernel = SparsePadicMatrix(*self._columns, self.nrows, self.exps, self.p)
+                # The kernel has its own copy of the entries (more compact)
+                self._columns = None
+            else:
+                self.cols = list(zip(*self._columns))
         elif mode == 'banded':
             self._init_bands(nbands)
 
@@ -665,6 +692,8 @@ class _IntegerOperator(SageObject):
         r'''
         The number of nonzero entries.
         '''
+        if self._kernel is not None:
+            return self._kernel.nnz()
         if self._columns is not None:
             return sum(len(o) for o in self._columns[1])
         return len(self.entries)
@@ -675,7 +704,7 @@ class _IntegerOperator(SageObject):
             if self._matrix is not None:
                 self._entries = self._matrix.dict()
             else:
-                rows, vals = self._columns
+                rows, vals = self._kernel.columns() if self._kernel is not None else self._columns
                 self._entries = {(r, c) : a for c in range(self.ncols) for r, a in zip(rows[c], vals[c])}
         return self._entries
 
@@ -726,6 +755,9 @@ class _IntegerOperator(SageObject):
             self.blocks.append((k, l, mu, M, B))
 
     def apply(self, v):
+        if self.mode == 'compiled':
+            # (already reduced modulo p^exps[c])
+            return self._kernel.apply(v)
         if self.mode == 'sparse':
             return [sum([v[r] * a for r, a in zip(rows, vals)]) for rows, vals in self.cols]
         if self.mode == 'dense':
@@ -810,6 +842,9 @@ class _PrecisionTracker(SageObject):
         src, dst, vals, precs = src[order], dst[order], vals[order], precs[order]
         del order
         targets, starts = np.unique(dst, return_index=True)
+        # (the dtypes of sparse_padic.propagate_precisions)
+        targets, starts = targets.astype(np.int64), starts.astype(np.int64)
+        src, vals, precs = [np.ascontiguousarray(o, dtype=np.int32) for o in (src, vals, precs)]
         return src, dst, vals, precs, targets, starts
 
 
@@ -1403,7 +1438,10 @@ class LogSeriesOperator(SageObject):
         src, dst, Mval, Mprec, targets, starts = self._tracker.arrays
         vals = np.array(O.element_valuations(w, N), dtype=np.int64)
         ans = np.full(len(precs), int(N), dtype=np.int64)
-        if len(src):
+        if len(src) and propagate_precisions is not None:
+            propagate_precisions(src, Mval, Mprec, targets, starts,
+                                 np.ascontiguousarray(precs, dtype=np.int64), vals, ans)
+        elif len(src):
             # The entries are sorted by target
             q = np.minimum(precs[src] + Mval, Mprec + vals[src])
             ans[targets] = np.minimum(ans[targets], np.minimum.reduceat(q, starts))
