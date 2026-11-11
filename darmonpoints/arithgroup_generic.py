@@ -90,6 +90,9 @@ class ArithGroup_generic(AlgebraicGroup):
 
     @cached_method
     def order_discriminant(self):
+        stored = self.__dict__.get("_stored_order_discriminant")
+        if stored is not None:
+            return stored
         if not hasattr(self.B, "invariants") or self.B.invariants() == (1, 1):
             return self.level
         else:
@@ -98,6 +101,9 @@ class ArithGroup_generic(AlgebraicGroup):
 
     @cached_method
     def _get_O_basis(self):
+        stored = self.__dict__.get("_stored_O_basis")
+        if stored is not None:
+            return list(stored)
         if not hasattr(self.B, "invariants"):
             return [
                 matrix(ZZ, 2, 2, v)
@@ -256,8 +262,17 @@ class ArithGroup_generic(AlgebraicGroup):
         except AttributeError:
             prime = P
         R = Qp(prime, prec)
-        verbose("Calling magma pMatrixRing")
         a, b = self.B.invariants()
+        stored = self.__dict__.get("_stored_padic_splitting")
+        if stored is not None and self.F == QQ:
+            # Stored splitting (see arithgroup_io), Hensel-lifted if needed: no Magma
+            from .arithgroup_io import decode_padic_splitting
+
+            self._II, self._JJ = decode_padic_splitting(stored, prime, prec, a, b)
+            self._KK = self._II * self._JJ
+            self._prec = prec
+            return (self._II, self._JJ, self._KK), QQ.hom([R.one()])
+        verbose("Calling magma pMatrixRing")
         B_magma = self._get_B_magma()
         self.magma.eval("delete %s`pMatrixRings" % (self._O_magma.name()))
         if self.F == QQ:

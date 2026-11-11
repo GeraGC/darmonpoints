@@ -709,6 +709,12 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
         self._prec_inf = -1
 
         O_magma = kwargs.pop("O_magma", None)
+        stored_data = kwargs.pop("stored_data", None)
+        if stored_data is not None:
+            # Rebuild from stored data (see arithgroup_io), without Magma
+            self._restore_from_data(stored_data)
+            super().__init__(**kwargs)
+            return
         self._init_magma_objects(info_magma, O_magma)
 
         self.B = QuaternionAlgebra(
@@ -738,6 +744,107 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
             % (self.discriminant, self.level)
         )
 
+    # The Magma objects. For a group rebuilt from stored data they are only created (in its
+    # magma session, see arithgroup_io.LazyMagma) when some computation needs them.
+    def _magma_object(name):
+        key = "_magma_object" + name
+
+        def fget(self):
+            try:
+                return self.__dict__[key]
+            except KeyError:
+                pass
+            if "_stored_data" not in self.__dict__:
+                raise AttributeError(name)
+            self._init_magma_objects_from_stored()
+            return self.__dict__[key]
+
+        def fset(self, value):
+            self.__dict__[key] = value
+
+        def fdel(self):
+            self.__dict__.pop(key, None)
+
+        return property(fget, fset, fdel)
+
+    _B_magma = _magma_object("_B_magma")
+    _O_magma = _magma_object("_O_magma")
+    _Omax_magma = _magma_object("_Omax_magma")
+    _F_magma = _magma_object("_F_magma")
+    _D_magma = _magma_object("_D_magma")
+    del _magma_object
+
+    def _init_magma_objects_from_stored(self):
+        verbose("Creating the Magma objects of a group rebuilt from stored data")
+        QQ_magma = self.magma.RationalsAsNumberField()
+        a, b = self.B.invariants()
+        B_magma = self.magma.QuaternionAlgebra("%s" % QQ_magma.name(), a, b)
+        self._B_magma = B_magma
+        self._Omax_magma = self.magma.Order(
+            [B_magma(list(o)) for o in self._stored_Omax_basis]
+        )
+        self._O_magma = self.magma.Order([B_magma(list(o)) for o in self._stored_O_basis])
+        self._F_magma = B_magma.BaseRing()
+        self._D_magma = self.magma.UnitDisc(Precision=1000)
+
+    def _restore_from_data(self, data):
+        r"""
+        Set the attributes of the group from the data of arithgroup_io.export_arithgroup.
+        """
+        from .arithgroup_io import (
+            decode_complex,
+            decode_quaternion,
+            decode_rational,
+            decode_real,
+            decode_real_matrix,
+        )
+
+        self._stored_data = data
+        a, b = [decode_rational(x) for x in data["abtuple"]]
+        self.B = QuaternionAlgebra(a, b)
+        if self.B.discriminant() != self.discriminant:
+            raise ValueError("Error while constructing quaternion algebra")
+        B = self.B
+        self._stored_O_basis = [decode_quaternion(B, v) for v in data["O_basis"]]
+        self._stored_Omax_basis = [decode_quaternion(B, v) for v in data["Omax_basis"]]
+        # An ideal of ZZ, as computed by order_discriminant from the Magma order
+        self._stored_order_discriminant = ZZ.ideal(ZZ(data["order_discriminant"]))
+        self.O = B.quaternion_order(self._stored_O_basis)
+
+        # The splitting at infinity, set before anything calls _splitting_at_infinity
+        split = data["splitting_at_infinity"]
+        prec = int(split["prec"])
+        RRp = RealField(prec)
+        self._II_inf = decode_real_matrix(split["I"], prec)
+        self._JJ_inf = decode_real_matrix(split["J"], prec)
+        self._KK_inf = decode_real_matrix(split["K"], prec)
+        self._11_inf = matrix(RRp, 2, 2, 1)
+        self.rimg = RRp(1)
+        self.F_into_RR = self.F.hom([self.rimg], check=False)
+        self._prec_inf = prec
+
+        self.pi = 4 * RealField(800)(1).arctan()
+        self._fundamental_domain = [decode_complex(v) for v in data["fundamental_domain"]]
+        self.Ugens = [decode_quaternion(B, v) for v in data["Ugens"]]
+        self.Uside = [decode_quaternion(B, v) for v in data["Uside"]]
+        self.F_unit_offset = ZZ(data["F_unit_offset"])
+        self.ngquats = ZZ(data["ngquats"])
+        self.gquats = [None] + [decode_quaternion(B, v) for v in data["gquats"]]
+        self.findex = [ZZ(i) for i in data["findex"]]
+        self.fdargs = [decode_real(v) for v in data["fdargs"]]
+        self.minus_one_long = [ZZ(i) for i in data["minus_one_long"]]
+        self.translate = [None] + [[ZZ(i) for i in w] for w in data["translate"]]
+        self.translate_inv = [None] + [
+            [-o for o in reversed(trans)] for trans in self.translate[1:]
+        ]
+        self._relation_words = [[ZZ(i) for i in w] for w in data["relation_words"]]
+        emb = self.get_archimedean_embedding(prec)
+        self.embgquats = [None] + [emb(g) for g in self.gquats[1:]]
+        self._gens = [
+            self.element_class(self, quaternion_rep=g, word_rep=[i + 1], check=False)
+            for i, g in enumerate(self.Ugens)
+        ]
+
     def _init_geometric_data(self, **kwargs):  # rationalquaternion
         filename = kwargs.get("filename", None)
         self.pi = 4 * RealField(800)(1).arctan()
@@ -756,6 +863,9 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
                 for ky, val in geom_dict.items():
                     setattr(self, ky, val)
                 self.embgquats = [None] + [emb(g) for g in self.gquats[1:]]
+                self.translate_inv = [None] + [
+                    [-o for o in reversed(trans)] for trans in self.translate[1:]
+                ]
                 self._gens = [
                     self.element_class(
                         self, quaternion_rep=g, word_rep=[i + 1], check=False

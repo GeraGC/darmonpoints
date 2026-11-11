@@ -324,6 +324,14 @@ class BigArithGroup_class(AlgebraicGroup):
             fwrite("# disc(B) = %s" % self.Gpn.B.discriminant(), outfile)
         else:
             fwrite("# B = M_2(F)", outfile)
+        # Stored data (see arithgroup_io): the p-adic splitting has to be set before the first call
+        # to get_embedding, and the BT representatives before the first call to get_BT_reps
+        padic_splitting = kwargs.pop("padic_splitting", None)
+        if padic_splitting is not None:
+            self.Gpn._stored_padic_splitting = padic_splitting
+        BT_reps = kwargs.pop("BT_reps", None)
+        if BT_reps is not None:
+            self._stored_BT_reps = [set_immutable(self.Gn.B(o)) for o in BT_reps]
         self._prec = -1
         iotap = self.get_embedding(200)
         fwrite(
@@ -351,7 +359,11 @@ class BigArithGroup_class(AlgebraicGroup):
         if not self.use_shapiro():
             fwrite("# R(p) with basis %s" % basis_data_p, outfile)
             self.Gpn.get_Up_reps = self.get_Up_reps
-        wp = kwargs.pop("wp", self.wp())
+        wp = kwargs.pop("wp", None)
+        if wp is not None:
+            self.set_wp(wp)  # Checks that it is valid
+        else:
+            self.wp()
         self.BT = BruhatTitsTree(self.norm_p)
         verbose("Done initializing arithmetic groups")
         verbose("Done initialization of BigArithmeticGroup")
@@ -490,6 +502,9 @@ class BigArithGroup_class(AlgebraicGroup):
 
     @cached_method
     def get_BT_reps(self):
+        stored = self.__dict__.get("_stored_BT_reps")
+        if stored is not None:
+            return list(stored)
         reps = [self.Gpn.B(1)] + [None for i in range(self.p)]
         emb = self.get_embedding(20)
         matrices = [(i + 1, matrix(QQ, 2, 2, [i, 1, -1, 0])) for i in range(self.p)]
