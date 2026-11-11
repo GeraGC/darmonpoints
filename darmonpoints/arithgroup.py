@@ -1083,7 +1083,48 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
         self, p, D, prec, outfile=None, return_all=False, extra_conductor=1, **kwargs
     ):
         r"""
-        sage: from darmonpoints.sarithgroup import ArithGroup
+        The fixed point ``tau`` and the generator ``gamma`` of the stabilizer, in the group,
+        of an embedding of a quadratic order of `K = \QQ(\sqrt{D})`.
+
+        The embedding ``phi`` is given by the image ``quadratic_embedding`` of `\sqrt{D}`
+        (computed with Magma, for the maximal order, if it is not given). The order
+        embedded optimally by ``phi``, `\ZZ + c O_K`, is found from it: its conductor `c`
+        is the smallest positive integer with `\phi(c w) \in R` (`w` the generator of
+        `O_K`). It is 1 for an optimal embedding of `O_K`, and `f` for an optimal
+        embedding of the order `O_D` of a non-fundamental discriminant `D = d_K f^2`.
+        ``gamma`` is the image of the smallest power of the fundamental unit (squared if
+        of norm -1) in the order of conductor ``c * extra_conductor``.
+
+        EXAMPLES:
+
+        An optimal embedding of the order of conductor 7 of `\QQ(\sqrt{3})`, of
+        discriminant `588 = 12 \cdot 7^2`: the embedding of `\ZZ[\sqrt{3}]` conjugated by an
+        element of norm 7 (as 7 is inert in `\QQ(\sqrt{3})`, `\sqrt{3}` is no longer sent
+        into the order)::
+
+            sage: from darmonpoints.sarithgroup import BigArithGroup
+            sage: G = BigArithGroup(5, 6, 1, magma=Magma(), use_shapiro=False, outfile='/tmp/darmonpoints.tmp') # optional - magma
+            sage: GG = G.large_group() # optional - magma
+            sage: s = GG.compute_quadratic_embedding(3) # optional - magma
+            sage: x = next(a * 14 * s * a**-1 for a in GG.get_hecke_reps(7) if not GG._is_in_order(a * s * a**-1)) # optional - magma
+            sage: x**2, GG._is_in_order(x / 2), GG._is_in_order(x / 14) # optional - magma
+            (588, True, False)
+            sage: gamma, tau = GG.embed_order(5, 588, 20, quadratic_embedding=x, outfile='/tmp/darmonpoints.tmp') # optional - magma
+            sage: g = gamma.quaternion_rep # optional - magma
+            sage: g * x == x * g, g.reduced_norm(), g.reduced_trace() # optional - magma
+            (True, 1, 194)
+
+        This is the image of `(2 + \sqrt{3})^4 = 97 + 4 \sqrt{588}`, the smallest power of the
+        fundamental unit in the order of conductor 7. For the optimal embedding of
+        `\ZZ[\sqrt{3}]` it is `2 + \sqrt{3}` itself::
+
+            sage: gamma, tau = GG.embed_order(5, 12, 20, quadratic_embedding=2 * s, outfile='/tmp/darmonpoints.tmp') # optional - magma
+            sage: gamma.quaternion_rep.reduced_trace() # optional - magma
+            4
+
+        ::
+
+            sage: from darmonpoints.sarithgroup import ArithGroup
         sage: G = ArithGroup(QQ,6,magma=Magma()) # optional - magma
         sage: f = G.embed_order(23,20) # optional - magma
         """
@@ -1121,7 +1162,20 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
         fwrite("# w is %s" % w, outfile)
         fwrite("# w_K satisfies: %s" % w.minpoly(), outfile)
         fwrite("# Cp has precision: %s" % Cp.precision_cap(), outfile)
-        assert self._is_in_order(phi(w))
+        # The conductor of the order embedded optimally by phi: phi(c * w) is in R for c
+        # dividing the index of Z[sqrt(D)] in O_K (or twice it, if phi(sqrt(D)) is not in R)
+        conductor = next(
+            (c for c in ZZ(2 * r1).abs().divisors() if self._is_in_order(phi(c * w))),
+            None,
+        )
+        if conductor is None:  # AssertionError, as the assert this replaces (callers catch it)
+            raise AssertionError(
+                "The quadratic embedding does not map an order of K = Q(sqrt(%s)) into the order"
+                % D
+            )
+        if conductor != 1:
+            fwrite("# Optimal embedding of the order of conductor %s" % conductor, outfile)
+        extra_conductor = conductor * ZZ(extra_conductor)
 
         iotap = self.get_embedding(prec)
 
