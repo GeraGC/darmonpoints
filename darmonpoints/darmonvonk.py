@@ -440,6 +440,11 @@ def construct_conjectural_field(
             base = QQ
         except TypeError:
             base = D1.parent()
+    if base == QQ:
+        # The conductor of a non-fundamental discriminant D = d_K f^2: the ray class
+        # field modulo f contains the narrow ring class field of conductor f
+        extra_conductor_1 *= discriminant_conductor(D1)[1]
+        extra_conductor_2 *= discriminant_conductor(D2)[1]
     R = PolynomialRing(QQ, "x")
     x = R.gen()
     F1 = (
@@ -1187,15 +1192,40 @@ class DVCocycle(SageObject):
 
 
 def prime_list_candidates(D1, D2, extra_conductor_1=1, extra_conductor_2=1):
+    r"""
+    The primes `\ell` dividing `(D_1 D_2 - x^2)/4` for some `x`, and not split in
+    `\QQ(\sqrt{D_1})` nor in `\QQ(\sqrt{D_2})`. Here `D_i` is the discriminant of the
+    order that ``Di`` stands for (see :func:`darmonpoints.util.discriminant_conductor`;
+    the maximal order for a fundamental discriminant or a radicand like 3), multiplied by
+    the square of ``extra_conductor_i``.
+
+    EXAMPLES::
+
+        sage: from darmonpoints.darmonvonk import prime_list_candidates
+        sage: prime_list_candidates(92, 12)
+        [2, 3, 5, 17, 31, 53, 89]
+        sage: prime_list_candidates(3, 13) == prime_list_candidates(12, 13)
+        True
+
+    The order of discriminant `588 = 12 \cdot 7^2` (of conductor 7 in `\QQ(\sqrt{3})`)::
+
+        sage: L = prime_list_candidates(92, 588); len(L), L[:10]
+        (39, [2, 3, 5, 17, 31, 53, 89, 113, 127, 137])
+        sage: L == prime_list_candidates(92, 12, extra_conductor_2=7)
+        True
+    """
     prime_list = set([])
     try:
         D1 = D1.norm().abs()
         D2 = D2.norm().abs()
         D1D2 = D1 * D2
     except AttributeError:
+        (dK1, f1), (dK2, f2) = discriminant_conductor(D1), discriminant_conductor(D2)
         D1D2 = (
-            fundamental_discriminant(D1)
-            * fundamental_discriminant(D2)
+            dK1
+            * f1**2
+            * dK2
+            * f2**2
             * extra_conductor_1**2
             * extra_conductor_2**2
         )

@@ -1059,6 +1059,28 @@ class ArithGroup_rationalquaternion(ArithGroup_fuchsian_generic):
 
     # rationalquaternion
     def compute_quadratic_embedding(self, D, **kwargs):
+        r"""
+        The image of `\sqrt{D}` under an optimal embedding (computed with Magma) of the
+        maximal order of `\QQ(\sqrt{D})`.
+
+        A non-fundamental discriminant `D = d_K f^2` stands for the order of conductor `f`
+        (see :func:`darmonpoints.util.discriminant_conductor`), which this does not embed;
+        an optimal embedding of it has to be given to ``embed_order`` as
+        ``quadratic_embedding``::
+
+            sage: from darmonpoints.arithgroup import ArithGroup_rationalquaternion
+            sage: ArithGroup_rationalquaternion.compute_quadratic_embedding(None, 588)
+            Traceback (most recent call last):
+            ...
+            NotImplementedError: Only the maximal order of Q(sqrt(588)) is embedded, not the order of discriminant 588 (conductor 7); pass an optimal embedding of it as quadratic_embedding
+        """
+        f = discriminant_conductor(D)[1]
+        if f != 1:
+            raise NotImplementedError(
+                "Only the maximal order of Q(sqrt(%s)) is embedded, not the order of discriminant %s"
+                " (conductor %s); pass an optimal embedding of it as quadratic_embedding"
+                % (D, D, f)
+            )
         QQmagma = self.magma.Rationals()
         ZZmagma = self.magma.Integers()
         a, b = self.B.invariants()
